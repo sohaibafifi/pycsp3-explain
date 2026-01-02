@@ -25,6 +25,7 @@ __version__ = "0.1.0"
 
 # Import MUS algorithms
 from pycsp3_explain.explain.mus import (
+    mus,
     mus_naive,
     quickxplain_naive,
     is_mus,
@@ -36,6 +37,7 @@ from pycsp3_explain.explain.utils import (
     flatten_constraints,
     get_constraint_variables,
     ConstraintTracker,
+    make_assump_model,
     order_by_num_variables,
 )
 
@@ -43,6 +45,7 @@ from pycsp3_explain.explain.utils import (
 from pycsp3_explain.solvers.wrapper import (
     SolveResult,
     solve_subset,
+    solve_subset_with_core,
     is_sat,
     is_unsat,
 )
@@ -51,6 +54,7 @@ __all__ = [
     # Version
     "__version__",
     # MUS algorithms
+    "mus",
     "mus_naive",
     "quickxplain_naive",
     "is_mus",
@@ -59,10 +63,12 @@ __all__ = [
     "flatten_constraints",
     "get_constraint_variables",
     "ConstraintTracker",
+    "make_assump_model",
     "order_by_num_variables",
     # Solver utilities
     "SolveResult",
     "solve_subset",
+    "solve_subset_with_core",
     "is_sat",
     "is_unsat",
 ]

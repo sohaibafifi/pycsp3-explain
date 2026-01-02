@@ -9,7 +9,8 @@ import os
 import tempfile
 import traceback
 import atexit
-from typing import List, Any, Optional
+import re
+from typing import List, Any, Optional, Tuple
 from enum import Enum
 
 
@@ -19,6 +20,23 @@ class SolveResult(Enum):
     UNSAT = "unsat"
     UNKNOWN = "unknown"
     ERROR = "error"
+
+
+_ANSI_ESCAPE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE.sub("", text)
+
+
+def _parse_core_indices(core_line: Optional[str]) -> List[int]:
+    if not core_line:
+        return []
+    cleaned = _strip_ansi(core_line)
+    matches = re.findall(r"(?<!\()c(\d+)(?=\()", cleaned)
+    if not matches:
+        matches = re.findall(r"c(\d+)", cleaned)
+    return [int(m) for m in matches]
 
 
 def disable_pycsp3_atexit():
@@ -34,6 +52,118 @@ def disable_pycsp3_atexit():
         atexit.unregister(pycsp3_end)
     except (ImportError, AttributeError):
         pass
+
+
+def _solve_subset_internal(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    solver: str = "ace",
+    verbose: int = -1,
+    timeout: Optional[int] = None,
+    extraction: bool = False
+) -> Tuple[SolveResult, Optional[str]]:
+    """
+    Internal solver entry point. When extraction=True, attempts to extract an UNSAT core.
+    Returns a tuple of (SolveResult, core_line).
+    """
+    # Disable PyCSP3's atexit callback to prevent errors
+    disable_pycsp3_atexit()
+
+    # Import pycsp3 modules
+    from pycsp3 import satisfy, solve, SAT, UNSAT, UNKNOWN, OPTIMUM, CORE, core as pycsp3_core
+    from pycsp3 import ACE, CHOCO
+    from pycsp3.classes.entities import CtrEntities, VarEntities, ObjEntities, AnnEntities
+    from pycsp3.compiler import Compilation
+
+    # Save current constraint state (NOT variables - those are managed by the caller)
+    saved_ctr_items = CtrEntities.items[:]
+    saved_obj_items = ObjEntities.items[:]
+    saved_ann_items = AnnEntities.items[:]
+    saved_ann_types = AnnEntities.items_types[:] if hasattr(AnnEntities, 'items_types') else []
+
+    # Save and reset compilation state
+    saved_compilation_done = Compilation.done
+    saved_compilation_model = Compilation.model
+    saved_compilation_string_model = Compilation.string_model
+
+    core_line = None
+
+    try:
+        # Reset compilation state for fresh solve
+        Compilation.done = False
+        Compilation.model = None
+        Compilation.string_model = None
+
+        # Clear only constraints and objectives (keep variables!)
+        CtrEntities.items = []
+        ObjEntities.items = []
+        AnnEntities.items = []
+        if hasattr(AnnEntities, 'items_types'):
+            AnnEntities.items_types = []
+
+        # Post constraints
+        all_constraints = []
+        if hard:
+            all_constraints.extend(hard)
+        all_constraints.extend(soft)
+
+        if not all_constraints:
+            return SolveResult.SAT, None  # Empty model is SAT
+
+        satisfy(*all_constraints)
+
+        # Build solver options
+        solver_type = ACE if solver.lower() == "ace" else CHOCO
+        options_str = ""
+        if timeout:
+            options_str = f"-t={timeout}s"
+
+        # Generate a unique temp filename for this solve
+        import uuid
+        temp_filename = os.path.join(tempfile.gettempdir(), f"pycsp3_explain_{uuid.uuid4().hex}.xml")
+
+        # Solve with explicit filename
+        status = solve(
+            solver=solver_type,
+            verbose=verbose,
+            options=options_str,
+            filename=temp_filename,
+            extraction=extraction,
+        )
+
+        if extraction:
+            core_line = pycsp3_core()
+
+        # Clean up temp file
+        try:
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+        except:
+            pass
+
+        if status == SAT or status == OPTIMUM:
+            return SolveResult.SAT, core_line
+        elif status == UNSAT or status == CORE:
+            return SolveResult.UNSAT, core_line
+        else:
+            return SolveResult.UNKNOWN, core_line
+
+    except Exception as e:
+        if verbose >= 0:
+            print(f"Solver error: {e}")
+            traceback.print_exc()
+        return SolveResult.ERROR, core_line
+
+    finally:
+        # Restore constraint state only (not variables)
+        CtrEntities.items = saved_ctr_items
+        ObjEntities.items = saved_obj_items
+        AnnEntities.items = saved_ann_items
+        if hasattr(AnnEntities, 'items_types'):
+            AnnEntities.items_types = saved_ann_types
+
+        # Note: We don't restore Compilation state - it needs to stay as-is
+        # for the solve result to be valid
 
 
 def solve_subset(
@@ -56,93 +186,39 @@ def solve_subset(
     :param timeout: Optional timeout in seconds
     :return: SolveResult indicating SAT, UNSAT, or UNKNOWN
     """
-    # Disable PyCSP3's atexit callback to prevent errors
-    disable_pycsp3_atexit()
+    result, _ = _solve_subset_internal(
+        soft=soft,
+        hard=hard,
+        solver=solver,
+        verbose=verbose,
+        timeout=timeout,
+        extraction=False,
+    )
+    return result
 
-    # Import pycsp3 modules
-    from pycsp3 import satisfy, solve, SAT, UNSAT, UNKNOWN, OPTIMUM
-    from pycsp3 import ACE, CHOCO
-    from pycsp3.classes.entities import CtrEntities, VarEntities, ObjEntities, AnnEntities
-    from pycsp3.compiler import Compilation
 
-    # Save current constraint state (NOT variables - those are managed by the caller)
-    saved_ctr_items = CtrEntities.items[:]
-    saved_obj_items = ObjEntities.items[:]
-    saved_ann_items = AnnEntities.items[:]
-    saved_ann_types = AnnEntities.items_types[:] if hasattr(AnnEntities, 'items_types') else []
+def solve_subset_with_core(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    solver: str = "ace",
+    verbose: int = -1,
+    timeout: Optional[int] = None
+) -> Tuple[SolveResult, List[int]]:
+    """
+    Solve a model with constraints and attempt to extract an UNSAT core.
 
-    # Save and reset compilation state
-    saved_compilation_done = Compilation.done
-    saved_compilation_model = Compilation.model
-    saved_compilation_string_model = Compilation.string_model
-
-    try:
-        # Reset compilation state for fresh solve
-        Compilation.done = False
-        Compilation.model = None
-        Compilation.string_model = None
-
-        # Clear only constraints and objectives (keep variables!)
-        CtrEntities.items = []
-        ObjEntities.items = []
-        AnnEntities.items = []
-        if hasattr(AnnEntities, 'items_types'):
-            AnnEntities.items_types = []
-
-        # Post constraints
-        all_constraints = []
-        if hard:
-            all_constraints.extend(hard)
-        all_constraints.extend(soft)
-
-        if not all_constraints:
-            return SolveResult.SAT  # Empty model is SAT
-
-        satisfy(*all_constraints)
-
-        # Build solver options
-        solver_type = ACE if solver.lower() == "ace" else CHOCO
-        options_str = ""
-        if timeout:
-            options_str = f"-t={timeout}s"
-
-        # Generate a unique temp filename for this solve
-        import uuid
-        temp_filename = os.path.join(tempfile.gettempdir(), f"pycsp3_explain_{uuid.uuid4().hex}.xml")
-
-        # Solve with explicit filename
-        status = solve(solver=solver_type, verbose=verbose, options=options_str, filename=temp_filename)
-
-        # Clean up temp file
-        try:
-            if os.path.exists(temp_filename):
-                os.remove(temp_filename)
-        except:
-            pass
-
-        if status == SAT or status == OPTIMUM:
-            return SolveResult.SAT
-        elif status == UNSAT:
-            return SolveResult.UNSAT
-        else:
-            return SolveResult.UNKNOWN
-
-    except Exception as e:
-        if verbose >= 0:
-            print(f"Solver error: {e}")
-            traceback.print_exc()
-        return SolveResult.ERROR
-
-    finally:
-        # Restore constraint state only (not variables)
-        CtrEntities.items = saved_ctr_items
-        ObjEntities.items = saved_obj_items
-        AnnEntities.items = saved_ann_items
-        if hasattr(AnnEntities, 'items_types'):
-            AnnEntities.items_types = saved_ann_types
-
-        # Note: We don't restore Compilation state - it needs to stay as-is
-        # for the solve result to be valid
+    :return: (SolveResult, core_indices) where core_indices refers to the
+             constraint positions in hard + soft.
+    """
+    result, core_line = _solve_subset_internal(
+        soft=soft,
+        hard=hard,
+        solver=solver,
+        verbose=verbose,
+        timeout=timeout,
+        extraction=True,
+    )
+    return result, _parse_core_indices(core_line)
 
 
 def is_sat(

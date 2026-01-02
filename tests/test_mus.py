@@ -8,7 +8,7 @@ import os
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus_naive, quickxplain_naive, is_mus
+from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain_naive, is_mus
 from pycsp3_explain.solvers.wrapper import is_sat, is_unsat
 
 
@@ -146,6 +146,49 @@ class TestQuickXplain:
         assert len(mus) == 2
         # Should prefer c0 (first constraint)
         assert constraint_in_list(c0, mus)
+
+
+class TestMusAssumptionBased:
+    """Tests for assumption-based MUS algorithm."""
+
+    def setup_method(self):
+        """Clear PyCSP3 state before each test."""
+        clear()
+
+    def test_simple_unsat(self):
+        """Test assumption-based MUS on a simple unsatisfiable model."""
+        clear()
+
+        x = VarArray(size=3, dom=range(10))
+
+        c0 = x[0] == 5
+        c1 = x[1] >= 3
+        c2 = x[0] == 7
+
+        soft = [c0, c1, c2]
+        mus_set = mus(soft, solver="ace", verbose=-1)
+
+        assert len(mus_set) == 2
+        assert constraint_in_list(c0, mus_set)
+        assert constraint_in_list(c2, mus_set)
+        assert not constraint_in_list(c1, mus_set)
+
+    def test_mus_with_hard_constraints(self):
+        """Test assumption-based MUS with hard constraints."""
+        clear()
+
+        x = VarArray(size=2, dom=range(10))
+
+        hard = [x[0] >= 0]
+        c0 = x[0] + x[1] == 5
+        c1 = x[0] + x[1] == 10
+
+        soft = [c0, c1]
+        mus_set = mus(soft, hard=hard, solver="ace", verbose=-1)
+
+        assert len(mus_set) == 2
+        assert constraint_in_list(c0, mus_set)
+        assert constraint_in_list(c1, mus_set)
 
 
 class TestIsMus:

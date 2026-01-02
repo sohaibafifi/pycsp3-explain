@@ -8,6 +8,7 @@ satisfiability of constraint subsets.
 from pycsp3_explain.solvers.wrapper import (
     SolveResult,
     solve_subset,
+    solve_subset_with_core,
     is_sat,
     is_unsat,
     disable_pycsp3_atexit,
@@ -16,8 +17,8 @@ from pycsp3_explain.solvers.wrapper import (
 __all__ = [
     "SolveResult",
     "solve_subset",
+    "solve_subset_with_core",
     "is_sat",
     "is_unsat",
     "disable_pycsp3_atexit",
 ]
-

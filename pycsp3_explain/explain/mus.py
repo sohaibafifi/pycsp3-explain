@@ -2,6 +2,7 @@
 MUS (Minimal Unsatisfiable Subset) algorithms for PyCSP3.
 
 This module provides implementations of:
+- mus: Assumption-based MUS using core extraction (ACE)
 - mus_naive: Deletion-based MUS using naive re-solving
 - quickxplain_naive: Preferred MUS based on constraint ordering
 
@@ -12,8 +13,18 @@ A MUS is a minimal subset of constraints that is unsatisfiable:
 
 from typing import List, Any, Optional
 
-from pycsp3_explain.explain.utils import flatten_constraints, order_by_num_variables
-from pycsp3_explain.solvers.wrapper import is_sat, is_unsat
+from pycsp3_explain.explain.utils import (
+    flatten_constraints,
+    order_by_num_variables,
+    make_assump_model,
+    get_constraint_variables,
+)
+from pycsp3_explain.solvers.wrapper import (
+    SolveResult,
+    is_sat,
+    is_unsat,
+    solve_subset_with_core,
+)
 
 
 def mus_naive(
@@ -79,6 +90,90 @@ def mus_naive(
                 print(f"  -> constraint not needed")
 
     return mus
+
+
+def mus(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    solver: str = "ace",
+    verbose: int = -1
+) -> List[Any]:
+    """
+    Compute a Minimal Unsatisfiable Subset using assumption indicators.
+
+    This implementation relies on ACE's core extraction to seed and refine
+    a deletion-based MUS search.
+
+    :param soft: List of soft constraints (candidates for MUS)
+    :param hard: List of hard constraints (always included, not in MUS)
+    :param solver: Solver name ("ace" only for core extraction)
+    :param verbose: Verbosity level (-1 for silent)
+    :return: A minimal unsatisfiable subset of soft constraints
+    :raises AssertionError: If soft + hard is satisfiable
+    """
+    if solver.lower() != "ace":
+        if verbose >= 0:
+            print("mus: solver does not support core extraction, using mus_naive")
+        return mus_naive(soft, hard, solver, verbose)
+
+    soft, hard, assumptions, guard_constraints = make_assump_model(soft, hard)
+
+    def solve_with_assumptions(assumed_indices: List[int]):
+        assumption_constraints = [assumptions[i] == 1 for i in assumed_indices]
+        soft_constraints = guard_constraints + assumption_constraints
+        return solve_subset_with_core(soft_constraints, hard, solver, verbose)
+
+    def core_to_assumptions(core_indices: List[int], assumed_indices: List[int]) -> set[int]:
+        core_assumps = set()
+        hard_offset = len(hard)
+        guard_count = len(guard_constraints)
+        for idx in core_indices:
+            if idx < hard_offset:
+                continue
+            rel = idx - hard_offset
+            if rel < guard_count:
+                core_assumps.add(rel)
+                continue
+            rel -= guard_count
+            if 0 <= rel < len(assumed_indices):
+                core_assumps.add(assumed_indices[rel])
+        return core_assumps
+
+    all_indices = list(range(len(soft)))
+    result, core_indices = solve_with_assumptions(all_indices)
+    assert result == SolveResult.UNSAT, \
+        "MUS: model must be UNSAT (soft + hard constraints must be unsatisfiable)"
+
+    core = core_to_assumptions(core_indices, all_indices)
+    if not core:
+        core = set(all_indices)
+
+    def num_vars(i: int) -> int:
+        try:
+            return len(get_constraint_variables(soft[i]))
+        except Exception:
+            return 0
+
+    ordered = sorted(core, key=num_vars, reverse=True)
+
+    for idx in ordered:
+        if idx not in core:
+            continue
+        core.remove(idx)
+        assumed = sorted(core)
+        result, core_indices = solve_with_assumptions(assumed)
+        if result == SolveResult.SAT:
+            core.add(idx)
+        elif result == SolveResult.UNSAT:
+            refined = core_to_assumptions(core_indices, assumed)
+            if refined:
+                core = set(refined)
+        else:
+            if verbose >= 0:
+                print("mus: solver returned UNKNOWN/ERROR, using mus_naive")
+            return mus_naive(soft, hard, solver, verbose)
+
+    return [soft[i] for i in range(len(soft)) if i in core]
 
 
 def quickxplain_naive(

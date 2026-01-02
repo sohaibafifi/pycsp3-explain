@@ -11,6 +11,14 @@ from typing import List, Any, Optional, Tuple, Dict
 import sys
 import os
 
+_ASSUMP_COUNTER = 0
+
+
+def _next_assump_name(prefix: str) -> str:
+    global _ASSUMP_COUNTER
+    _ASSUMP_COUNTER += 1
+    return f"{prefix}_{_ASSUMP_COUNTER}"
+
 
 def flatten_constraints(constraints: List[Any]) -> List[Any]:
     """
@@ -112,6 +120,30 @@ class ConstraintTracker:
     def all_indices(self) -> List[int]:
         """All soft constraint indices."""
         return list(range(self.num_soft))
+
+
+def make_assump_model(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    name_prefix: str = "assump"
+) -> Tuple[List[Any], List[Any], List[Any], List[Any]]:
+    """
+    Build assumption indicators and implication constraints for soft constraints.
+
+    Returns (soft, hard, assumptions, guard_constraints) where guard constraints
+    are of the form a -> c for each soft constraint c.
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        raise ValueError("soft constraints cannot be empty")
+
+    from pycsp3 import VarArray, imply
+
+    assumptions = VarArray(size=len(soft), dom=range(2), id=_next_assump_name(name_prefix))
+    guard_constraints = [imply(a, c) for a, c in zip(assumptions, soft)]
+    return soft, hard, list(assumptions), guard_constraints
 
 
 def order_by_num_variables(constraints: List[Any], descending: bool = True) -> List[Any]:

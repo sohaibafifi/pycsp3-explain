@@ -9,6 +9,7 @@ This module provides implementations of:
 """
 
 from pycsp3_explain.explain.mus import (
+    mus,
     mus_naive,
     quickxplain_naive,
     is_mus,
@@ -19,11 +20,13 @@ from pycsp3_explain.explain.utils import (
     flatten_constraints,
     get_constraint_variables,
     ConstraintTracker,
+    make_assump_model,
     order_by_num_variables,
 )
 
 __all__ = [
     # MUS algorithms
+    "mus",
     "mus_naive",
     "quickxplain_naive",
     "is_mus",
@@ -32,5 +35,6 @@ __all__ = [
     "flatten_constraints",
     "get_constraint_variables",
     "ConstraintTracker",
+    "make_assump_model",
     "order_by_num_variables",
 ]

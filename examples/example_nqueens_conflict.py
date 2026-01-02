@@ -8,7 +8,7 @@ adding impossible constraints to a classic N-Queens problem.
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus_naive
+from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain_naive
 
 
 def find_constraint_index(constraint, constraint_list):
@@ -28,7 +28,7 @@ def main():
     clear()
 
     n = 4  # 4-Queens problem
-    print(f"\n1. Setting up {n}-Queens problem...")
+    print(f"\nSetting up {n}-Queens problem...")
 
     # Variables: q[i] = column of queen in row i
     q = VarArray(size=n, dom=range(n))
@@ -37,7 +37,7 @@ def main():
     print(f"   Domain: [0, {n-1}]")
 
     # Standard N-Queens constraints
-    print("\n2. Creating constraints...")
+    print("\nCreating constraints...")
 
     constraints = []
     constraint_names = []
@@ -61,7 +61,7 @@ def main():
     print(f"   c2: {constraint_names[-1]}")
 
     # Now add some impossible constraints
-    print("\n3. Adding impossible constraints...")
+    print("\nAdding impossible constraints...")
 
     # Force queen 0 to column 0
     c_force_0 = q[0] == 0
@@ -89,20 +89,30 @@ def main():
 
     # This forces all queens on the main diagonal, violating c2
 
-    print("\n4. Finding MUS...")
-    print("\t4.1 Using mus_naive to identify conflicting constraints...")
-    mus = mus_naive(constraints, solver="ace", verbose=-1)
+    print("\nFinding MUS...")
+    print("\t1 Using mus (assumption-based) to identify conflicting constraints...")
+    mus_fast = mus(constraints, solver="ace", verbose=-1)
 
-    print(f"\n\tResult: Found {len(mus)} conflicting constraint(s)")
+    print(f"\n\tResult: Found {len(mus_fast)} conflicting constraint(s)")
     print("   Minimal Unsatisfiable Subset:")
-    for c in mus:
+    for c in mus_fast:
         idx = find_constraint_index(c, constraints)
         print(f"   - c{idx}: {constraint_names[idx]}")
 
+    print("\n\t2 Using mus_naive to identify conflicting constraints...")
+    mus_slow = mus_naive(constraints, solver="ace", verbose=-1)
 
+    print(f"\n\tResult: Found {len(mus_slow)} conflicting constraint(s)")
+    print("   Minimal Unsatisfiable Subset:")
+    for c in mus_slow:
+        idx = find_constraint_index(c, constraints)
+        print(f"   - c{idx}: {constraint_names[idx]}")
 
-    print("\n\t4.2 using the quickxplain naive to identify preferred conflicting constraints...")
-    from pycsp3_explain.explain.mus import quickxplain_naive
+    same = set(id(c) for c in mus_fast) == set(id(c) for c in mus_slow)
+    print("\nComparison:")
+    print("\t   Same constraints:" if same else "\t   Different MUSes (both minimal)")
+
+    print("\n\t3 using the quickxplain naive to identify preferred conflicting constraints...")
     qx_mus = quickxplain_naive(constraints, solver="ace", verbose=-1)
     print(f"\n\t Result: Found {len(qx_mus)} conflicting constraint(s)")
     print("   Preferred Minimal Unsatisfiable Subset:")

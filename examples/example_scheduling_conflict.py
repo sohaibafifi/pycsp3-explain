@@ -8,7 +8,7 @@ where tasks have conflicting time constraints.
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus_naive, quickxplain_naive
+from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain_naive
 
 
 def find_constraint_index(constraint, constraint_list):
@@ -29,7 +29,7 @@ def main():
 
     # Scenario: 3 tasks need to be scheduled
     # Each task has a start time variable
-    print("\n1. Creating scheduling problem...")
+    print("\nCreating scheduling problem...")
 
     # Task start times (0-23 hours)
     task_a_start = Var(dom=range(24))
@@ -46,7 +46,7 @@ def main():
     print(f"   Task C: duration {duration_c} hours")
 
     # Constraints
-    print("\n2. Creating constraints...")
+    print("\nCreating constraints...")
 
     constraints = []
     constraint_names = []
@@ -93,20 +93,32 @@ def main():
     # - But B must start >= 18 (c2)
     # This is the core conflict!
 
-    print("\n3. Finding MUS with mus_naive...")
-    mus = mus_naive(constraints, solver="ace", verbose=-1)
+    print("\n1. Finding MUS with mus (assumption-based)...")
+    mus_fast = mus(constraints, solver="ace", verbose=-1)
 
-    print(f"\n4. Result: Found {len(mus)} conflicting constraint(s)")
+    print(f"\n\tResult: Found {len(mus_fast)} conflicting constraint(s)")
     print("   Minimal Unsatisfiable Subset:")
-    for c in mus:
+    for c in mus_fast:
         idx = find_constraint_index(c, constraints)
         print(f"   - c{idx+1}: {constraint_names[idx]}")
 
-    print("\n5. Finding preferred MUS with QuickXplain...")
+    print("\n2. Finding MUS with mus_naive...")
+    mus_slow = mus_naive(constraints, solver="ace", verbose=-1)
+
+    print(f"\n\tNaive Result: Found {len(mus_slow)} conflicting constraint(s)")
+    for c in mus_slow:
+        idx = find_constraint_index(c, constraints)
+        print(f"   - c{idx+1}: {constraint_names[idx]}")
+
+    same = set(id(c) for c in mus_fast) == set(id(c) for c in mus_slow)
+    print("\nComparison:")
+    print("   Same constraints:" if same else "   Different MUSes (both minimal)")
+
+    print("\n3. Finding preferred MUS with QuickXplain...")
     print("   (Prefers earlier constraints in case of multiple MUSes)")
     qx_mus = quickxplain_naive(constraints, solver="ace", verbose=-1)
 
-    print(f"\n6. QuickXplain Result: {len(qx_mus)} constraint(s)")
+    print(f"\n\tQuickXplain Result: {len(qx_mus)} constraint(s)")
     for c in qx_mus:
         idx = find_constraint_index(c, constraints)
         print(f"   - c{idx+1}: {constraint_names[idx]}")
