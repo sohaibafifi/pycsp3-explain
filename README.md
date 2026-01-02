@@ -13,8 +13,8 @@ Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subse
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/pyxcsp3-explain.git
-cd pyxcsp3-explain
+git clone https://github.com/sohaibafifi/pycsp3-explain.git
+cd pycsp3-explain
 
 # Install dependencies
 pip install -e .
