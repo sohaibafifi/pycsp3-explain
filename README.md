@@ -1,13 +1,12 @@
 # PyCSP3-Explain
 
-Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subsets (MUS), maximal satisfiable subsets (MSS), and minimal correction sets (MCS) to debug and understand infeasible constraint problems.
+Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subsets (MUS) to debug and understand infeasible constraint problems.
 
 ## Features and roadmap
 
-- **MUS (Minimal Unsatisfiable Subset)**: Find the smallest set of constraints that cause infeasibility
-- **MSS (Maximal Satisfiable Subset)**: Find the largest subset of constraints that can be satisfied
-- **MCS (Minimal Correction Set)**: Find the minimal set of constraints to remove for feasibility
-- **MARCO**: Enumerate all MUS and MCS for complete analysis
+- **MUS (Minimal Unsatisfiable Subset)**: Assumption-based MUS using ACE core extraction and a naive deletion-based MUS
+- **QuickXplain (naive)**: Preferred MUS based on constraint ordering
+- **MSS/MCS/MARCO**: Planned (not implemented yet)
 
 ## Installation
 
@@ -23,15 +22,18 @@ pip install -e .
 ## Requirements
 
 - Python 3.10+
-- PyCSP3
+- PyCSP3 (>= 2.5)
+- lxml (>= 4.9)
+- Java runtime (for ACE/Choco)
 
 ## Quick Start
 
 ```python
 from pycsp3 import *
-from pycsp3_explain import mus_naive, mcs_naive
+from pycsp3_explain import mus, mus_naive, is_mus
 
 # Define an infeasible model
+clear()
 x = VarArray(size=3, dom=range(10))
 
 constraints = [
@@ -42,15 +44,28 @@ constraints = [
     x[1] == x[2],
 ]
 
-# Find a minimal unsatisfiable subset
-minimal_conflict = mus_naive(soft=constraints)
-print("MUS:", minimal_conflict)
+# Find a minimal unsatisfiable subset (assumption-based with ACE)
+minimal_conflict = mus(soft=constraints, solver="ace")
+print("MUS (assumption-based):", minimal_conflict)
+print("Valid:", is_mus(minimal_conflict, solver="ace"))
 
-# Find minimal corrections needed
-corrections = mcs_naive(soft=constraints)
-print("MCS:", corrections)
+# Naive MUS (works with any solver, but slower)
+minimal_conflict_naive = mus_naive(soft=constraints, solver="ace")
+print("MUS (naive):", minimal_conflict_naive)
 ```
 
+## Examples
+
+```bash
+python examples/example_simple_conflict.py
+python examples/example_scheduling_conflict.py
+python examples/example_nqueens_conflict.py
+```
+
+## Notes
+
+- `mus()` uses ACE core extraction; if you pass a non-ACE solver it will fall back to `mus_naive()`.
+- Examples print both assumption-based and naive MUS results for comparison.
 
 ## How It Works
 
