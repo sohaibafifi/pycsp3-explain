@@ -9,7 +9,7 @@ This package provides algorithms for finding:
 
 Example usage:
     from pycsp3 import *
-    from pycsp3_explain import mus_naive, quickxplain_naive
+    from pycsp3_explain import mus_naive, mss_naive
 
     # Create variables and constraints
     clear()
@@ -19,6 +19,10 @@ Example usage:
     # Find minimal unsatisfiable subset
     conflict = mus_naive(soft=constraints)
     print("Conflicting constraints:", conflict)
+
+    # Find maximal satisfiable subset
+    satisfiable = mss_naive(soft=constraints)
+    print("Satisfiable constraints:", satisfiable)
 """
 
 __version__ = "0.1.0"
@@ -30,6 +34,17 @@ from pycsp3_explain.explain.mus import (
     quickxplain_naive,
     is_mus,
     all_mus_naive,
+)
+
+# Import MSS/MCS algorithms
+from pycsp3_explain.explain.mss import (
+    mss,
+    mss_naive,
+    is_mss,
+    mcs,
+    mcs_naive,
+    mcs_from_mss,
+    is_mcs,
 )
 
 # Import utility functions
@@ -59,6 +74,15 @@ __all__ = [
     "quickxplain_naive",
     "is_mus",
     "all_mus_naive",
+    # MSS algorithms
+    "mss",
+    "mss_naive",
+    "is_mss",
+    # MCS algorithms
+    "mcs",
+    "mcs_naive",
+    "mcs_from_mss",
+    "is_mcs",
     # Utilities
     "flatten_constraints",
     "get_constraint_variables",
