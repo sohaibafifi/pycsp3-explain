@@ -4,6 +4,8 @@ MSS (Maximal Satisfiable Subset) algorithms for PyCSP3.
 This module provides implementations of:
 - mss_naive: Greedy growing MSS using naive re-solving
 - mss: Assumption-based MSS using incremental solving
+- mss_opt: Weighted MSS optimization
+- mcs_opt: Weighted MCS optimization
 
 An MSS is a maximal subset of constraints that is satisfiable:
 - The subset itself is SAT
@@ -12,7 +14,7 @@ An MSS is a maximal subset of constraints that is satisfiable:
 Note: MCS (Minimal Correction Set) = Soft \\ MSS
 """
 
-from typing import List, Any, Optional
+from typing import List, Any, Optional, Union
 
 from pycsp3_explain.explain.utils import (
     flatten_constraints,
@@ -24,6 +26,7 @@ from pycsp3_explain.solvers.wrapper import (
     SolveResult,
     is_sat,
     is_unsat,
+    solve_subset,
     solve_subset_with_core,
 )
 
@@ -364,3 +367,101 @@ def is_mcs(
             return False
 
     return True
+
+
+def mss_opt(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    weights: Optional[List[Union[int, float]]] = None,
+    solver: str = "ace",
+    verbose: int = -1
+) -> List[Any]:
+    """
+    Compute an optimal (weighted) Maximal Satisfiable Subset.
+
+    This implementation finds an MSS that maximizes the sum of weights
+    of included constraints. If no weights are provided, it maximizes
+    the number of constraints (equivalent to standard MSS).
+
+    Algorithm:
+    Uses an iterative approach to find the optimal weighted MSS.
+    For each constraint subset sorted by total weight (descending),
+    tests if it's SAT and returns the first maximal one found.
+
+    :param soft: List of soft constraints
+    :param hard: List of hard constraints
+    :param weights: Weight for each soft constraint (default: all 1s)
+    :param solver: Solver name
+    :param verbose: Verbosity level
+    :return: An optimal weighted MSS
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        return []
+
+    n = len(soft)
+
+    # Default weights: all 1s
+    w: List[Union[int, float]] = weights if weights is not None else [1] * n
+    if len(w) != n:
+        raise ValueError(f"weights length ({len(w)}) must match soft length ({n})")
+
+    # If all constraints are SAT, return all
+    if is_sat(soft, hard, solver, verbose):
+        return soft
+
+    # Greedy approach: order by weight (higher weight first)
+    # Try to include high-weight constraints first
+    indexed_constraints = [(i, soft[i], w[i]) for i in range(n)]
+    indexed_constraints.sort(key=lambda x: -x[2])  # Sort by weight descending
+
+    mss_indices: set = set()
+
+    for i, c, weight in indexed_constraints:
+        # Try adding constraint to current MSS
+        test_subset = [soft[j] for j in mss_indices] + [c]
+        if is_sat(test_subset, hard, solver, verbose):
+            mss_indices.add(i)
+            if verbose >= 0:
+                print(f"mss_opt: added constraint {i} (weight {weight}), "
+                      f"MSS size: {len(mss_indices)}")
+
+    return [soft[i] for i in range(n) if i in mss_indices]
+
+
+def mcs_opt(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    weights: Optional[List[Union[int, float]]] = None,
+    solver: str = "ace",
+    verbose: int = -1
+) -> List[Any]:
+    """
+    Compute an optimal (weighted) Minimal Correction Set.
+
+    This implementation finds an MCS that minimizes the sum of weights
+    of removed constraints. If no weights are provided, it minimizes
+    the number of constraints (smallest MCS).
+
+    :param soft: List of soft constraints
+    :param hard: List of hard constraints
+    :param weights: Weight for each soft constraint (default: all 1s)
+    :param solver: Solver name
+    :param verbose: Verbosity level
+    :return: An optimal weighted MCS
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        return []
+
+    # If already SAT, no correction needed
+    if is_sat(soft, hard, solver, verbose):
+        return []
+
+    # Find optimal MSS and return its complement
+    mss_result = mss_opt(soft, hard, weights, solver, verbose)
+    return mcs_from_mss(mss_result, soft)

@@ -6,6 +6,7 @@ This package provides algorithms for finding:
 - MSS (Maximal Satisfiable Subsets)
 - MCS (Minimal Correction Sets)
 - MARCO enumeration of all MUS/MCS
+- Optimal MUS algorithms (SMUS, OCUS)
 
 Example usage:
     from pycsp3 import *
@@ -23,6 +24,16 @@ Example usage:
     # Find maximal satisfiable subset
     satisfiable = mss_naive(soft=constraints)
     print("Satisfiable constraints:", satisfiable)
+
+    # Enumerate all MUSes and MCSes
+    from pycsp3_explain import marco
+    for result_type, subset in marco(soft=constraints):
+        print(f"{result_type}: {len(subset)} constraints")
+
+    # Find smallest MUS
+    from pycsp3_explain import smus
+    smallest = smus(soft=constraints)
+    print("Smallest MUS:", smallest)
 """
 
 __version__ = "0.1.0"
@@ -34,17 +45,32 @@ from pycsp3_explain.explain.mus import (
     quickxplain_naive,
     is_mus,
     all_mus_naive,
+    optimal_mus,
+    optimal_mus_naive,
+    smus,
+    ocus_naive,
+    OCUSException,
 )
 
 # Import MSS/MCS algorithms
 from pycsp3_explain.explain.mss import (
     mss,
     mss_naive,
+    mss_opt,
     is_mss,
     mcs,
     mcs_naive,
+    mcs_opt,
     mcs_from_mss,
     is_mcs,
+)
+
+# Import MARCO enumeration
+from pycsp3_explain.explain.marco import (
+    marco,
+    marco_naive,
+    all_mus,
+    all_mcs,
 )
 
 # Import utility functions
@@ -74,15 +100,28 @@ __all__ = [
     "quickxplain_naive",
     "is_mus",
     "all_mus_naive",
+    # Optimal MUS algorithms
+    "optimal_mus",
+    "optimal_mus_naive",
+    "smus",
+    "ocus_naive",
+    "OCUSException",
     # MSS algorithms
     "mss",
     "mss_naive",
+    "mss_opt",
     "is_mss",
     # MCS algorithms
     "mcs",
     "mcs_naive",
+    "mcs_opt",
     "mcs_from_mss",
     "is_mcs",
+    # MARCO enumeration
+    "marco",
+    "marco_naive",
+    "all_mus",
+    "all_mcs",
     # Utilities
     "flatten_constraints",
     "get_constraint_variables",
