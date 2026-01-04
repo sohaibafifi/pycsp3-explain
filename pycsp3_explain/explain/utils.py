@@ -20,6 +20,21 @@ def _next_assump_name(prefix: str) -> str:
     return f"{prefix}_{_ASSUMP_COUNTER}"
 
 
+def _normalize_constraint(constraint: Any) -> Any:
+    try:
+        from pycsp3.classes.auxiliary.enums import TypeCtrArg
+        from pycsp3.classes.entities import ECtr
+        from pycsp3.classes.main.constraints import Constraint, ConstraintIntension
+    except Exception:
+        return constraint
+
+    if isinstance(constraint, ConstraintIntension):
+        return constraint.arguments[TypeCtrArg.FUNCTION].content
+    if isinstance(constraint, Constraint):
+        return ECtr(constraint)
+    return constraint
+
+
 def flatten_constraints(constraints: List[Any]) -> List[Any]:
     """
     Flatten a nested list of constraints into a single list.
@@ -32,7 +47,7 @@ def flatten_constraints(constraints: List[Any]) -> List[Any]:
         if isinstance(c, list):
             result.extend(flatten_constraints(c))
         elif c is not None:
-            result.append(c)
+            result.append(_normalize_constraint(c))
     return result
 
 

@@ -13,6 +13,8 @@ import re
 from typing import List, Any, Optional, Tuple
 from enum import Enum
 
+from pycsp3_explain.explain.utils import flatten_constraints
+
 
 class SolveResult(Enum):
     """Result of a solve operation."""
@@ -37,6 +39,13 @@ def _parse_core_indices(core_line: Optional[str]) -> List[int]:
     if not matches:
         matches = re.findall(r"c(\d+)", cleaned)
     return [int(m) for m in matches]
+
+
+def _normalize_constraints(constraints: Optional[List[Any]]) -> List[Any]:
+    if constraints is None:
+        return []
+    items = list(constraints) if isinstance(constraints, (list, tuple)) else [constraints]
+    return flatten_constraints(items)
 
 
 def disable_pycsp3_atexit():
@@ -102,10 +111,9 @@ def _solve_subset_internal(
             AnnEntities.items_types = []
 
         # Post constraints
-        all_constraints = []
-        if hard:
-            all_constraints.extend(hard)
-        all_constraints.extend(soft)
+        soft = _normalize_constraints(soft)
+        hard = _normalize_constraints(hard)
+        all_constraints = hard + soft
 
         if not all_constraints:
             return SolveResult.SAT, None  # Empty model is SAT
