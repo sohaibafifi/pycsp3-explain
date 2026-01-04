@@ -44,6 +44,7 @@ from pycsp3_explain.explain.marco import (
 from pycsp3_explain.explain.utils import (
     flatten_constraints,
     get_constraint_variables,
+    explain_unsat,
     ConstraintTracker,
     make_assump_model,
     order_by_num_variables,
@@ -81,6 +82,7 @@ __all__ = [
     # Utilities
     "flatten_constraints",
     "get_constraint_variables",
+    "explain_unsat",
     "ConstraintTracker",
     "make_assump_model",
     "order_by_num_variables",

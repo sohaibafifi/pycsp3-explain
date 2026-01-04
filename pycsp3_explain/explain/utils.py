@@ -176,3 +176,86 @@ def order_by_num_variables(constraints: List[Any], descending: bool = True) -> L
             return 0
 
     return sorted(constraints, key=count_vars, reverse=descending)
+
+
+def explain_unsat(
+    algorithm: Any = "mus",
+    soft: Optional[List[Any]] = None,
+    hard: Optional[List[Any]] = None,
+    check: bool = True,
+    **kwargs
+) -> Any:
+    """
+    Run an explanation algorithm on an UNSAT model.
+
+    If soft is None, constraints are pulled from the current model via posted().
+    The algorithm can be a string key or a callable.
+    """
+    from pycsp3 import posted
+    from pycsp3_explain.solvers.wrapper import is_unsat
+
+    soft = posted() if soft is None else soft
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if check:
+        solver = kwargs.get("solver", "ace")
+        verbose = kwargs.get("verbose", -1)
+        if not is_unsat(soft, hard, solver=solver, verbose=verbose):
+            raise ValueError("explain_unsat: model must be UNSAT")
+
+    if isinstance(algorithm, str):
+        key = algorithm.lower()
+        from pycsp3_explain.explain.mus import (
+            mus,
+            mus_naive,
+            quickxplain_naive,
+            optimal_mus,
+            optimal_mus_naive,
+            smus,
+            ocus_naive,
+            all_mus_naive,
+        )
+        from pycsp3_explain.explain.mss import (
+            mss,
+            mss_naive,
+            mss_opt,
+            mcs,
+            mcs_naive,
+            mcs_opt,
+        )
+        from pycsp3_explain.explain.marco import (
+            marco,
+            marco_naive,
+            all_mus,
+            all_mcs,
+        )
+
+        algo_map = {
+            "mus": mus,
+            "mus_naive": mus_naive,
+            "quickxplain": quickxplain_naive,
+            "quickxplain_naive": quickxplain_naive,
+            "optimal_mus": optimal_mus,
+            "optimal_mus_naive": optimal_mus_naive,
+            "smus": smus,
+            "ocus_naive": ocus_naive,
+            "all_mus_naive": all_mus_naive,
+            "mss": mss,
+            "mss_naive": mss_naive,
+            "mss_opt": mss_opt,
+            "mcs": mcs,
+            "mcs_naive": mcs_naive,
+            "mcs_opt": mcs_opt,
+            "marco": marco,
+            "marco_naive": marco_naive,
+            "all_mus": all_mus,
+            "all_mcs": all_mcs,
+        }
+
+        if key not in algo_map:
+            options = ", ".join(sorted(algo_map.keys()))
+            raise ValueError(f"Unknown algorithm '{algorithm}'. Expected one of: {options}")
+        algorithm = algo_map[key]
+
+    return algorithm(soft, hard, **kwargs)
