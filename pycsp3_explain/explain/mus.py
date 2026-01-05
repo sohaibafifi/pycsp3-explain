@@ -430,6 +430,7 @@ def optimal_mus_naive(
         
         Uses a simple enumeration approach for small problems.
         For larger problems, a MIP solver would be more efficient.
+        TODO: Replace with a real solver for hitting set optimization.
         """
         if not correction_sets:
             return set(range(n))  # All indices if no correction sets
