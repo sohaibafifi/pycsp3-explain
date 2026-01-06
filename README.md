@@ -12,6 +12,7 @@ Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subse
   - `smus()` - Smallest MUS (fewest constraints)
   - `optimal_mus()` - Minimum total weight MUS
   - `ocus_naive()` - Naive OCUS (alias for weighted MUS)
+  > Note that for now the IHS optimization is done via a simple enumeration approach; a more efficient method is planned.
 - **MSS (Maximal Satisfiable Subset)**: Find the maximum satisfiable portion
   - `mss()` - Assumption-based with core extraction
   - `mss_naive()` - Greedy growing algorithm
