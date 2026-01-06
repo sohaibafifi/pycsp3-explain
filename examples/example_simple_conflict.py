@@ -9,7 +9,7 @@ infeasible model.
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus, mus_naive, is_mus, optimal_mus
+from pycsp3_explain.explain.mus import mus, mus_naive, is_mus, optimal_mus, ocus
 from pycsp3_explain.explain.marco import marco
 
 
@@ -98,7 +98,24 @@ def main():
     optimal = optimal_mus(soft_constraints, weights=weights, solver="ace", verbose=-1)
     print_mus_result("\tOptimal MUS (weighted)", optimal, weights=weights)
 
-    print("\n4. Enumerating all MUSes and MCSes with MARCO...")
+    print("\n4. Finding OCUS with a required constraint (must include c2)...")
+    def require_c2(select):
+        return [select[2] == 1]
+
+    def require_c2_pred(indices):
+        return 2 in indices
+
+    ocus_result = ocus(
+        soft_constraints,
+        weights=weights,
+        solver="ace",
+        verbose=-1,
+        subset_constraints=require_c2,
+        subset_predicate=require_c2_pred,
+    )
+    print_mus_result("\tOCUS (must include c2)", ocus_result, weights=weights)
+
+    print("\n5. Enumerating all MUSes and MCSes with MARCO...")
     mus_count = 0
     mcs_count = 0
     for result_type, subset in marco(soft_constraints, solver="ace", verbose=-1):
@@ -114,6 +131,7 @@ def main():
     print("Explanation:")
     print("  The MUS shows that x[0] cannot be both 5 AND 7.")
     print("  Optimal MUS uses weights to rank which conflicts to examine first.")
+    print("  OCUS allows extra conditions on explanations.")
     print("  MARCO enumerates all MUSes and MCSes for deeper analysis.")
     print("  To fix the model, remove or modify one of these constraints.")
     print("=" * 60)

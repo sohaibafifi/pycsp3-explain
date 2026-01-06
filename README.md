@@ -11,6 +11,7 @@ Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subse
 - **Optimal MUS (SMUS/OCUS)**: Prefer smaller or lower-weight explanations
   - `smus()` - Smallest MUS (fewest constraints)
   - `optimal_mus()` - Minimum total weight MUS
+  - `ocus()` - OCUS with subset constraints/predicates
   - `ocus_naive()` - Naive OCUS (alias for weighted MUS)
   > Note: IHS uses a small CP model in PyCSP3 and falls back to enumeration if needed.
 - **MSS (Maximal Satisfiable Subset)**: Find the maximum satisfiable portion
@@ -116,6 +117,7 @@ Given an infeasible constraint satisfaction problem (CSP), explanation tools hel
 - `optimal_mus(soft, hard=None, weights=None, solver="ace")` - Minimum-weight MUS
 - `optimal_mus_naive(soft, hard=None, weights=None, solver="ace")` - Naive minimum-weight MUS
 - `smus(soft, hard=None, solver="ace")` - Smallest MUS (fewest constraints)
+- `ocus(soft, hard=None, weights=None, solver="ace", ...)` - OCUS with subset constraints
 - `ocus_naive(soft, hard=None, weights=None, solver="ace")` - Naive OCUS
 - `OCUSException` - Exception for optimal MUS/OCUS routines
 

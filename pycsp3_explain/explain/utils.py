@@ -213,6 +213,7 @@ def explain_unsat(
             optimal_mus,
             optimal_mus_naive,
             smus,
+            ocus,
             ocus_naive,
             all_mus_naive,
         )
@@ -239,6 +240,7 @@ def explain_unsat(
             "optimal_mus": optimal_mus,
             "optimal_mus_naive": optimal_mus_naive,
             "smus": smus,
+            "ocus": ocus,
             "ocus_naive": ocus_naive,
             "all_mus_naive": all_mus_naive,
             "mss": mss,

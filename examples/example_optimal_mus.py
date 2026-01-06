@@ -13,7 +13,7 @@ These algorithms are useful when:
 """
 
 from pycsp3 import *
-from pycsp3_explain import smus, optimal_mus, is_mus
+from pycsp3_explain import smus, optimal_mus, ocus, is_mus
 
 
 def main():
@@ -147,10 +147,46 @@ When there's a conflict, we want to identify which constraints to review.
     print("   suggesting these low-priority constraints are the issue.")
 
     # =========================================================================
-    # Method 3: Compare different weight schemes
+    # Method 3: OCUS with additional constraints
     # =========================================================================
     print("\n" + "-" * 70)
-    print("Method 3: Impact of Different Weight Schemes")
+    print("Method 3: OCUS with Required Constraint")
+    print("-" * 70)
+
+    clear()
+    alice_hours = Var(dom=range(0, 50), id="alice_hours")
+    bob_hours = Var(dom=range(0, 50), id="bob_hours")
+    c0 = alice_hours <= 40
+    c1 = bob_hours <= 40
+    c2 = alice_hours + bob_hours >= 70
+    c3 = alice_hours <= 30
+    c4 = bob_hours <= 25
+    soft_constraints = [c0, c1, c2, c3, c4]
+    weights = [100, 100, 10, 1, 1]
+
+    def require_business(select):
+        return [select[2] == 1]
+
+    def require_business_pred(indices):
+        return 2 in indices
+
+    constrained_mus = ocus(
+        soft_constraints,
+        weights=weights,
+        solver="ace",
+        verbose=-1,
+        subset_constraints=require_business,
+        subset_predicate=require_business_pred,
+    )
+    print_mus("OCUS (must include business constraint c2):", constrained_mus, show_weights=True)
+
+    print("\n   Interpretation: This keeps the business requirement in the explanation.")
+
+    # =========================================================================
+    # Method 4: Compare different weight schemes
+    # =========================================================================
+    print("\n" + "-" * 70)
+    print("Method 4: Impact of Different Weight Schemes")
     print("-" * 70)
 
     # Scheme A: All equal weights (same as SMUS)
@@ -204,14 +240,17 @@ When there's a conflict, we want to identify which constraints to review.
     print("""
    - smus() finds the MUS with fewest constraints
    - optimal_mus(weights) finds the MUS with minimum total weight
+   - ocus(...) lets you require constraints in the explanation
 
    Use cases:
    - SMUS: When you want the simplest explanation
    - Weighted: When some constraints are more important to preserve
+   - OCUS: When you must keep or avoid specific constraints
 
    In our scheduling example:
    - The conflict is between employee preferences and business needs
    - Weighted MUS points to preferences as the likely constraints to relax
+   - OCUS keeps the business requirement in the explanation
 """)
     print("=" * 70)
 

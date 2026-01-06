@@ -7,6 +7,7 @@ This module provides implementations of:
 - quickxplain_naive: Preferred MUS based on constraint ordering
 - optimal_mus: Find optimal MUS according to weights
 - smus: Find smallest MUS
+- ocus: Optimal Constrained MUS
 - ocus_naive: Optimal Constrained MUS (naive version)
 
 A MUS is a minimal subset of constraints that is unsatisfiable:
@@ -14,7 +15,8 @@ A MUS is a minimal subset of constraints that is unsatisfiable:
 - Removing any constraint from the subset makes it SAT
 """
 
-from typing import List, Any, Optional, Union
+from typing import List, Any, Optional, Union, Callable, Set
+from contextlib import contextmanager
 
 from pycsp3_explain.explain.utils import (
     flatten_constraints,
@@ -34,6 +36,322 @@ from pycsp3_explain.solvers.wrapper import (
 class OCUSException(Exception):
     """Exception raised when OCUS cannot find a valid solution."""
     pass
+
+
+def _normalize_constraint_list(constraints: Optional[Any]) -> List[Any]:
+    if constraints is None:
+        return []
+    if isinstance(constraints, (list, tuple, set, frozenset)):
+        return [c for c in constraints if c is not None]
+    return [constraints]
+
+
+@contextmanager
+def _clean_pycsp3_state():
+    from pycsp3_explain.solvers.wrapper import disable_pycsp3_atexit
+    from pycsp3.classes.entities import (
+        CtrEntities,
+        VarEntities,
+        ObjEntities,
+        AnnEntities,
+    )
+    from pycsp3.classes.main.variables import Variable
+    from pycsp3.classes.main.constraints import auxiliary
+    from pycsp3.compiler import Compilation
+
+    disable_pycsp3_atexit()
+
+    saved_ctr_items = CtrEntities.items[:]
+    saved_obj_items = ObjEntities.items[:]
+    saved_ann_items = AnnEntities.items[:]
+    saved_ann_types = AnnEntities.items_types[:] if hasattr(AnnEntities, "items_types") else []
+    saved_var_items = VarEntities.items[:]
+    saved_var_to_evar = VarEntities.varToEVar.copy()
+    saved_var_to_evar_array = VarEntities.varToEVarArray.copy()
+    saved_prefix_to_evar_array = VarEntities.prefixToEVarArray.copy()
+    saved_name2obj = Variable.name2obj.copy()
+    saved_arrays = Variable.arrays[:] if hasattr(Variable, "arrays") else []
+
+    saved_compilation = {
+        "done": Compilation.done,
+        "model": Compilation.model,
+        "string_model": Compilation.string_model,
+        "string_data": Compilation.string_data,
+        "data": Compilation.data,
+        "solve": Compilation.solve,
+        "stopwatch": Compilation.stopwatch,
+        "stopwatch2": Compilation.stopwatch2,
+        "pathname": Compilation.pathname,
+        "filename": Compilation.filename,
+    }
+
+    aux = auxiliary()
+    saved_aux_intro = aux._introduced_variables
+    saved_aux_collected = aux._collected_constraints
+    saved_aux_raw = aux._collected_raw_constraints
+    saved_aux_ext = aux._collected_extension_constraints
+    saved_aux_cache = aux.cache
+    saved_aux_cache_ints = aux.cache_ints.copy()
+    saved_aux_cache_nodes = aux.cache_nodes.copy()
+
+    try:
+        CtrEntities.items = []
+        ObjEntities.items = []
+        AnnEntities.items = []
+        if hasattr(AnnEntities, "items_types"):
+            AnnEntities.items_types = []
+        VarEntities.items = []
+        VarEntities.varToEVar = {}
+        VarEntities.varToEVarArray = {}
+        VarEntities.prefixToEVarArray = {}
+        Variable.name2obj = {}
+        if hasattr(Variable, "arrays"):
+            Variable.arrays = []
+
+        aux._introduced_variables = []
+        aux._collected_constraints = []
+        aux._collected_raw_constraints = []
+        aux._collected_extension_constraints = []
+        aux.cache = []
+        aux.cache_ints = {}
+        aux.cache_nodes = {}
+
+        Compilation.done = False
+        Compilation.model = None
+        Compilation.string_model = None
+        Compilation.string_data = None
+        Compilation.data = None
+        Compilation.solve = None
+        Compilation.stopwatch = None
+        Compilation.stopwatch2 = None
+        Compilation.pathname = ""
+        Compilation.filename = ""
+
+        yield
+    finally:
+        CtrEntities.items = saved_ctr_items
+        ObjEntities.items = saved_obj_items
+        AnnEntities.items = saved_ann_items
+        if hasattr(AnnEntities, "items_types"):
+            AnnEntities.items_types = saved_ann_types
+        VarEntities.items = saved_var_items
+        VarEntities.varToEVar = saved_var_to_evar
+        VarEntities.varToEVarArray = saved_var_to_evar_array
+        VarEntities.prefixToEVarArray = saved_prefix_to_evar_array
+        Variable.name2obj = saved_name2obj
+        if hasattr(Variable, "arrays"):
+            Variable.arrays = saved_arrays
+
+        aux._introduced_variables = saved_aux_intro
+        aux._collected_constraints = saved_aux_collected
+        aux._collected_raw_constraints = saved_aux_raw
+        aux._collected_extension_constraints = saved_aux_ext
+        aux.cache = saved_aux_cache
+        aux.cache_ints = saved_aux_cache_ints
+        aux.cache_nodes = saved_aux_cache_nodes
+
+        Compilation.done = saved_compilation["done"]
+        Compilation.model = saved_compilation["model"]
+        Compilation.string_model = saved_compilation["string_model"]
+        Compilation.string_data = saved_compilation["string_data"]
+        Compilation.data = saved_compilation["data"]
+        Compilation.solve = saved_compilation["solve"]
+        Compilation.stopwatch = saved_compilation["stopwatch"]
+        Compilation.stopwatch2 = saved_compilation["stopwatch2"]
+        Compilation.pathname = saved_compilation["pathname"]
+        Compilation.filename = saved_compilation["filename"]
+
+
+def _solve_selection_model(
+    n: int,
+    solver: str,
+    verbose: int,
+    constraints_builder: Callable[[List[Any]], Optional[Any]],
+    objective_builder: Optional[Callable[[List[Any]], Any]] = None,
+    fixed_selection: Optional[Set[int]] = None,
+) -> Union[Optional[Set[int]], bool]:
+    from pycsp3 import (
+        VarArray,
+        satisfy,
+        minimize,
+        solve,
+        value,
+        ACE,
+        CHOCO,
+        SAT,
+        OPTIMUM,
+    )
+    import os
+    import tempfile
+    import uuid
+
+    fixed = set(fixed_selection) if fixed_selection is not None else None
+    if fixed is not None and any(i < 0 or i >= n for i in fixed):
+        raise ValueError("fixed_selection contains indices out of range")
+
+    with _clean_pycsp3_state():
+        var_id = f"hs_{uuid.uuid4().hex}"
+        if fixed is None:
+            select = VarArray(size=n, dom=range(2), id=var_id)
+        else:
+            def dom(i):
+                return range(1, 2) if i in fixed else range(0, 1)
+
+            select = VarArray(size=n, dom=dom, id=var_id)
+
+        constraints = _normalize_constraint_list(constraints_builder(select))
+        if constraints:
+            satisfy(constraints)
+        else:
+            satisfy()
+
+        if objective_builder is not None:
+            minimize(objective_builder(select))
+
+        solver_type = ACE if solver.lower() == "ace" else CHOCO
+        temp_filename = os.path.join(
+            tempfile.gettempdir(),
+            f"pycsp3_explain_hs_{uuid.uuid4().hex}.xml",
+        )
+        status = solve(
+            solver=solver_type,
+            verbose=verbose,
+            filename=temp_filename,
+        )
+
+        try:
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+        except Exception:
+            pass
+
+        if objective_builder is None:
+            return status in (SAT, OPTIMUM)
+
+        if status not in (SAT, OPTIMUM):
+            return None
+
+        return {i for i in range(n) if value(select[i]) == 1}
+
+
+def _make_subset_checker(
+    n: int,
+    solver: str,
+    verbose: int,
+    subset_predicate: Optional[Callable[[Set[int]], bool]],
+    subset_constraints: Optional[Callable[[List[Any]], Any]],
+) -> Callable[[Set[int]], bool]:
+    def check(indices: Set[int]) -> bool:
+        if subset_predicate is not None and not subset_predicate(indices):
+            return False
+        if subset_constraints is None:
+            return True
+
+        def constraints_builder(select):
+            return _normalize_constraint_list(subset_constraints(select))
+
+        return bool(
+            _solve_selection_model(
+                n=n,
+                solver=solver,
+                verbose=verbose,
+                constraints_builder=constraints_builder,
+                objective_builder=None,
+                fixed_selection=indices,
+            )
+        )
+
+    return check
+
+
+def _find_optimal_hitting_set(
+    n: int,
+    correction_sets: List[Set[int]],
+    weights: List[Union[int, float]],
+    solver: str,
+    verbose: int,
+    subset_constraints: Optional[Callable[[List[Any]], Any]] = None,
+    subset_predicate: Optional[Callable[[Set[int]], bool]] = None,
+    subset_checker: Optional[Callable[[Set[int]], bool]] = None,
+) -> Optional[Set[int]]:
+    if subset_checker is None:
+        subset_checker = _make_subset_checker(
+            n=n,
+            solver=solver,
+            verbose=verbose,
+            subset_predicate=subset_predicate,
+            subset_constraints=subset_constraints,
+        )
+
+    if not correction_sets and subset_constraints is None and subset_predicate is None:
+        return set(range(n))  # All indices if no correction sets
+
+    if any(len(cs) == 0 for cs in correction_sets):
+        return None
+
+    from pycsp3 import Sum
+    from pycsp3.tools.utilities import integer_scaling
+
+    if any(isinstance(weight, float) and not weight.is_integer() for weight in weights):
+        scaled_w = integer_scaling(weights)
+    else:
+        scaled_w = [int(weight) for weight in weights]
+
+    def constraints_builder(select):
+        constraints: List[Any] = []
+        if correction_sets:
+            constraints.extend(Sum(select[i] for i in cs) >= 1 for cs in correction_sets)
+        if subset_constraints is not None:
+            constraints.extend(_normalize_constraint_list(subset_constraints(select)))
+        return constraints
+
+    def objective_builder(select):
+        return Sum(select[i] * scaled_w[i] for i in range(n))
+
+    use_cp = subset_predicate is None or subset_constraints is not None
+    if use_cp:
+        try:
+            hitting_set = _solve_selection_model(
+                n=n,
+                solver=solver,
+                verbose=verbose,
+                constraints_builder=constraints_builder,
+                objective_builder=objective_builder,
+            )
+            if hitting_set is not None and subset_checker(hitting_set):
+                return hitting_set
+        except Exception as exc:
+            if verbose >= 0:
+                print(f"hitting set CP solve failed ({exc}); using enumeration")
+
+    from itertools import combinations
+
+    indexed_weights = [(i, weights[i]) for i in range(n)]
+    indexed_weights.sort(key=lambda x: x[1])
+
+    best_set = None
+    best_weight = float("inf")
+
+    for size in range(1, n + 1):
+        min_possible_weight = sum(indexed_weights[i][1] for i in range(size))
+        if min_possible_weight >= best_weight:
+            break
+
+        for combo in combinations(range(n), size):
+            combo_set = set(combo)
+            if not subset_checker(combo_set):
+                continue
+
+            combo_weight = sum(weights[i] for i in combo)
+            if combo_weight >= best_weight:
+                continue
+
+            hits_all = all(bool(combo_set & cs) for cs in correction_sets) if correction_sets else True
+            if hits_all:
+                best_set = combo_set
+                best_weight = combo_weight
+
+    return best_set
 
 
 def mus_naive(
@@ -425,228 +743,14 @@ def optimal_mus_naive(
     correction_subsets: List[set] = []
 
     def find_optimal_hitting_set(correction_sets: List[set]) -> Optional[set]:
-        """
-        Find the minimum weight hitting set that hits all correction sets.
-
-        Builds a CP model with binary selection variables and a weighted
-        objective. Falls back to enumeration if the solver cannot find
-        an optimal solution.
-        """
-        if not correction_sets:
-            return set(range(n))  # All indices if no correction sets
-
-        def solve_hitting_set_cp() -> Optional[set]:
-            from pycsp3 import (
-                VarArray,
-                Sum,
-                satisfy,
-                minimize,
-                solve,
-                value,
-                ACE,
-                CHOCO,
-                SAT,
-                OPTIMUM,
-            )
-            from pycsp3.classes.entities import (
-                CtrEntities,
-                VarEntities,
-                ObjEntities,
-                AnnEntities,
-            )
-            from pycsp3.classes.main.variables import Variable
-            from pycsp3.classes.main.constraints import auxiliary
-            from pycsp3.compiler import Compilation
-            from pycsp3.tools.utilities import integer_scaling
-            from pycsp3_explain.solvers.wrapper import disable_pycsp3_atexit
-            import os
-            import tempfile
-            import uuid
-
-            if any(len(cs) == 0 for cs in correction_sets):
-                return None
-
-            disable_pycsp3_atexit()
-
-            saved_ctr_items = CtrEntities.items[:]
-            saved_obj_items = ObjEntities.items[:]
-            saved_ann_items = AnnEntities.items[:]
-            saved_ann_types = AnnEntities.items_types[:] if hasattr(AnnEntities, "items_types") else []
-            saved_var_items = VarEntities.items[:]
-            saved_var_to_evar = VarEntities.varToEVar.copy()
-            saved_var_to_evar_array = VarEntities.varToEVarArray.copy()
-            saved_prefix_to_evar_array = VarEntities.prefixToEVarArray.copy()
-            saved_name2obj = Variable.name2obj.copy()
-            saved_arrays = Variable.arrays[:] if hasattr(Variable, "arrays") else []
-
-            saved_compilation = {
-                "done": Compilation.done,
-                "model": Compilation.model,
-                "string_model": Compilation.string_model,
-                "string_data": Compilation.string_data,
-                "data": Compilation.data,
-                "solve": Compilation.solve,
-                "stopwatch": Compilation.stopwatch,
-                "stopwatch2": Compilation.stopwatch2,
-                "pathname": Compilation.pathname,
-                "filename": Compilation.filename,
-            }
-
-            aux = auxiliary()
-            saved_aux_intro = aux._introduced_variables
-            saved_aux_collected = aux._collected_constraints
-            saved_aux_raw = aux._collected_raw_constraints
-            saved_aux_ext = aux._collected_extension_constraints
-            saved_aux_cache = aux.cache
-            saved_aux_cache_ints = aux.cache_ints.copy()
-            saved_aux_cache_nodes = aux.cache_nodes.copy()
-
-            try:
-                # Reset global state for an isolated CP model.
-                CtrEntities.items = []
-                ObjEntities.items = []
-                AnnEntities.items = []
-                if hasattr(AnnEntities, "items_types"):
-                    AnnEntities.items_types = []
-                VarEntities.items = []
-                VarEntities.varToEVar = {}
-                VarEntities.varToEVarArray = {}
-                VarEntities.prefixToEVarArray = {}
-                Variable.name2obj = {}
-                if hasattr(Variable, "arrays"):
-                    Variable.arrays = []
-
-                aux._introduced_variables = []
-                aux._collected_constraints = []
-                aux._collected_raw_constraints = []
-                aux._collected_extension_constraints = []
-                aux.cache = []
-                aux.cache_ints = {}
-                aux.cache_nodes = {}
-
-                Compilation.done = False
-                Compilation.model = None
-                Compilation.string_model = None
-                Compilation.string_data = None
-                Compilation.data = None
-                Compilation.solve = None
-                Compilation.stopwatch = None
-                Compilation.stopwatch2 = None
-                Compilation.pathname = ""
-                Compilation.filename = ""
-
-                var_id = f"hs_{uuid.uuid4().hex}"
-                select = VarArray(size=n, dom=range(2), id=var_id)
-
-                constraints = [Sum(select[i] for i in cs) >= 1 for cs in correction_sets]
-                satisfy(constraints)
-
-                if any(isinstance(weight, float) and not weight.is_integer() for weight in w):
-                    scaled_w = integer_scaling(w)
-                else:
-                    scaled_w = [int(weight) for weight in w]
-
-                minimize(Sum(select[i] * scaled_w[i] for i in range(n)))
-
-                solver_type = ACE if solver.lower() == "ace" else CHOCO
-                temp_filename = os.path.join(
-                    tempfile.gettempdir(),
-                    f"pycsp3_explain_hs_{uuid.uuid4().hex}.xml",
-                )
-                status = solve(
-                    solver=solver_type,
-                    verbose=verbose,
-                    filename=temp_filename,
-                )
-
-                try:
-                    if os.path.exists(temp_filename):
-                        os.remove(temp_filename)
-                except Exception:
-                    pass
-
-                if status not in (SAT, OPTIMUM):
-                    return None
-
-                return {i for i in range(n) if value(select[i]) == 1}
-            finally:
-                CtrEntities.items = saved_ctr_items
-                ObjEntities.items = saved_obj_items
-                AnnEntities.items = saved_ann_items
-                if hasattr(AnnEntities, "items_types"):
-                    AnnEntities.items_types = saved_ann_types
-                VarEntities.items = saved_var_items
-                VarEntities.varToEVar = saved_var_to_evar
-                VarEntities.varToEVarArray = saved_var_to_evar_array
-                VarEntities.prefixToEVarArray = saved_prefix_to_evar_array
-                Variable.name2obj = saved_name2obj
-                if hasattr(Variable, "arrays"):
-                    Variable.arrays = saved_arrays
-
-                aux._introduced_variables = saved_aux_intro
-                aux._collected_constraints = saved_aux_collected
-                aux._collected_raw_constraints = saved_aux_raw
-                aux._collected_extension_constraints = saved_aux_ext
-                aux.cache = saved_aux_cache
-                aux.cache_ints = saved_aux_cache_ints
-                aux.cache_nodes = saved_aux_cache_nodes
-
-                Compilation.done = saved_compilation["done"]
-                Compilation.model = saved_compilation["model"]
-                Compilation.string_model = saved_compilation["string_model"]
-                Compilation.string_data = saved_compilation["string_data"]
-                Compilation.data = saved_compilation["data"]
-                Compilation.solve = saved_compilation["solve"]
-                Compilation.stopwatch = saved_compilation["stopwatch"]
-                Compilation.stopwatch2 = saved_compilation["stopwatch2"]
-                Compilation.pathname = saved_compilation["pathname"]
-                Compilation.filename = saved_compilation["filename"]
-
-        def solve_hitting_set_enum() -> Optional[set]:
-            from itertools import combinations
-
-            # Try subsets in order of increasing weight
-            indexed_weights = [(i, w[i]) for i in range(n)]
-            indexed_weights.sort(key=lambda x: x[1])
-
-            best_set = None
-            best_weight = float("inf")
-
-            # Try all subsets from size 1 to n
-            for size in range(1, n + 1):
-                # Early termination: minimum possible weight for this size
-                min_possible_weight = sum(indexed_weights[i][1] for i in range(size))
-                if min_possible_weight >= best_weight:
-                    break
-
-                for combo in combinations(range(n), size):
-                    combo_set = set(combo)
-                    combo_weight = sum(w[i] for i in combo)
-
-                    if combo_weight >= best_weight:
-                        continue
-
-                    # Check if this set hits all correction sets
-                    hits_all = all(bool(combo_set & cs) for cs in correction_sets)
-                    if hits_all:
-                        best_set = combo_set
-                        best_weight = combo_weight
-
-                # If we found a solution at this size, no need to try larger
-                if best_set is not None:
-                    break
-
-            return best_set
-
-        try:
-            hitting_set = solve_hitting_set_cp()
-            if hitting_set is not None:
-                return hitting_set
-        except Exception as exc:
-            if verbose >= 0:
-                print(f"optimal_mus: hitting set CP solve failed ({exc}); using enumeration")
-
-        return solve_hitting_set_enum()
+        """Find the minimum weight hitting set that hits all correction sets."""
+        return _find_optimal_hitting_set(
+            n=n,
+            correction_sets=correction_sets,
+            weights=w,
+            solver=solver,
+            verbose=verbose,
+        )
 
     # Main OCUS loop
     while True:
@@ -750,6 +854,124 @@ def optimal_mus(
     :return: An optimal MUS according to weights
     """
     return optimal_mus_naive(soft, hard, weights, solver, verbose)
+
+
+def ocus(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    weights: Optional[List[Union[int, float]]] = None,
+    solver: str = "ace",
+    verbose: int = -1,
+    subset_predicate: Optional[Callable[[Set[int]], bool]] = None,
+    subset_constraints: Optional[Callable[[List[Any]], Any]] = None,
+) -> List[Any]:
+    """
+    Find an Optimal Constrained Unsatisfiable Subset (OCUS).
+
+    The constraint is defined over the selected subset of soft constraints.
+    Use subset_constraints to encode the constraint as PyCSP3 constraints
+    on selection variables (0/1). Optionally provide subset_predicate to
+    validate subsets during shrinking and enumeration fallback.
+
+    :param soft: List of soft constraints
+    :param hard: List of hard constraints
+    :param weights: Weight for each soft constraint
+    :param solver: Solver name
+    :param verbose: Verbosity level
+    :param subset_predicate: Python predicate on selected indices
+    :param subset_constraints: Builder for PyCSP3 constraints on selection vars
+    :return: An optimal constrained MUS according to weights
+    :raises OCUSException: If no OCUS exists
+    :raises AssertionError: If model is SAT
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        raise ValueError("soft constraints cannot be empty")
+
+    n = len(soft)
+
+    w: List[Union[int, float]] = weights if weights is not None else [1] * n
+    if len(w) != n:
+        raise ValueError(f"weights length ({len(w)}) must match soft length ({n})")
+
+    assert is_unsat(soft, hard, solver, verbose), \
+        "ocus: model must be UNSAT"
+
+    correction_subsets: List[Set[int]] = []
+
+    subset_checker = _make_subset_checker(
+        n=n,
+        solver=solver,
+        verbose=verbose,
+        subset_predicate=subset_predicate,
+        subset_constraints=subset_constraints,
+    )
+
+    while True:
+        hitting_set = _find_optimal_hitting_set(
+            n=n,
+            correction_sets=correction_subsets,
+            weights=w,
+            solver=solver,
+            verbose=verbose,
+            subset_constraints=subset_constraints,
+            subset_predicate=subset_predicate,
+            subset_checker=subset_checker,
+        )
+
+        if hitting_set is None:
+            raise OCUSException("No unsatisfiable subset could be found")
+
+        hitting_set_list = sorted(hitting_set)
+        subset = [soft[i] for i in hitting_set_list]
+
+        if verbose >= 0:
+            print(f"ocus: testing hitting set of size {len(hitting_set)}, "
+                  f"weight {sum(w[i] for i in hitting_set)}")
+
+        result = solve_subset(subset, hard, solver, verbose)
+
+        if result == SolveResult.UNSAT:
+            mus_indices = set(hitting_set)
+            ordered = sorted(mus_indices, key=lambda i: -w[i])
+
+            for idx in ordered:
+                if idx not in mus_indices:
+                    continue
+                candidate = mus_indices - {idx}
+                if not subset_checker(candidate):
+                    continue
+                mus_indices.remove(idx)
+                test_subset = [soft[i] for i in sorted(mus_indices)]
+                if not test_subset or is_sat(test_subset, hard, solver, verbose):
+                    mus_indices.add(idx)
+
+            return [soft[i] for i in range(n) if i in mus_indices]
+
+        elif result == SolveResult.SAT:
+            mss_indices = set(hitting_set_list)
+
+            for i in range(n):
+                if i in mss_indices:
+                    continue
+                test_indices = sorted(mss_indices | {i})
+                test_subset = [soft[j] for j in test_indices]
+                if is_sat(test_subset, hard, solver, verbose):
+                    mss_indices.add(i)
+
+            correction_subset = set(range(n)) - mss_indices
+            if not correction_subset:
+                raise OCUSException("Model is SAT, no MUS exists")
+
+            correction_subsets.append(correction_subset)
+
+            if verbose >= 0:
+                print(f"ocus: found correction subset of size {len(correction_subset)}")
+
+        else:
+            raise OCUSException(f"Solver returned {result}")
 
 
 def ocus_naive(

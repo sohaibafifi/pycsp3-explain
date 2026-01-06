@@ -48,6 +48,7 @@ from pycsp3_explain.explain.mus import (
     optimal_mus,
     optimal_mus_naive,
     smus,
+    ocus,
     ocus_naive,
     OCUSException,
 )
@@ -105,6 +106,7 @@ __all__ = [
     "optimal_mus",
     "optimal_mus_naive",
     "smus",
+    "ocus",
     "ocus_naive",
     "OCUSException",
     # MSS algorithms

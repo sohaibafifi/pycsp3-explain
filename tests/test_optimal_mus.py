@@ -1,5 +1,5 @@
 """
-Tests for optimal MUS algorithms (smus, optimal_mus, ocus_naive).
+Tests for optimal MUS algorithms (smus, optimal_mus, ocus).
 """
 
 import pytest
@@ -8,10 +8,12 @@ from pycsp3_explain.explain.mus import (
     optimal_mus,
     optimal_mus_naive,
     smus,
+    ocus,
     ocus_naive,
     is_mus,
     OCUSException,
 )
+from pycsp3_explain.solvers.wrapper import is_unsat
 
 
 def constraint_in_list(constraint, constraint_list):
@@ -189,6 +191,46 @@ class TestOcusNaive:
         # Should find MUS with lowest weight
         assert len(result) == 2
         assert is_mus(result, solver="ace", verbose=-1)
+
+
+class TestOcus:
+    """Tests for OCUS with subset constraints."""
+
+    def setup_method(self):
+        """Clear PyCSP3 state before each test."""
+        clear()
+
+    def test_subset_constraint(self):
+        """Test ocus honors a required constraint index."""
+        clear()
+
+        x = Var(dom=range(10))
+
+        c0 = x == 1
+        c1 = x == 2
+        c2 = x >= 0
+
+        soft = [c0, c1, c2]
+
+        def subset_constraints(select):
+            return [select[2] == 1]
+
+        def subset_predicate(indices):
+            return 2 in indices
+
+        result = ocus(
+            soft,
+            solver="ace",
+            verbose=-1,
+            subset_constraints=subset_constraints,
+            subset_predicate=subset_predicate,
+        )
+
+        result_indices = {i for i, c in enumerate(soft) if constraint_in_list(c, result)}
+
+        assert len(result) == 3
+        assert subset_predicate(result_indices)
+        assert is_unsat(result, solver="ace", verbose=-1)
 
 
 class TestMssOpt:
