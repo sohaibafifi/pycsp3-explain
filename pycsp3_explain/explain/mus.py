@@ -427,48 +427,226 @@ def optimal_mus_naive(
     def find_optimal_hitting_set(correction_sets: List[set]) -> Optional[set]:
         """
         Find the minimum weight hitting set that hits all correction sets.
-        
-        Uses a simple enumeration approach for small problems.
-        For larger problems, a MIP solver would be more efficient.
-        TODO: Replace with a real solver for hitting set optimization.
+
+        Builds a CP model with binary selection variables and a weighted
+        objective. Falls back to enumeration if the solver cannot find
+        an optimal solution.
         """
         if not correction_sets:
             return set(range(n))  # All indices if no correction sets
 
-        from itertools import combinations
+        def solve_hitting_set_cp() -> Optional[set]:
+            from pycsp3 import (
+                VarArray,
+                Sum,
+                satisfy,
+                minimize,
+                solve,
+                value,
+                ACE,
+                CHOCO,
+                SAT,
+                OPTIMUM,
+            )
+            from pycsp3.classes.entities import (
+                CtrEntities,
+                VarEntities,
+                ObjEntities,
+                AnnEntities,
+            )
+            from pycsp3.classes.main.variables import Variable
+            from pycsp3.classes.main.constraints import auxiliary
+            from pycsp3.compiler import Compilation
+            from pycsp3.tools.utilities import integer_scaling
+            from pycsp3_explain.solvers.wrapper import disable_pycsp3_atexit
+            import os
+            import tempfile
+            import uuid
 
-        # Try subsets in order of increasing weight
-        indexed_weights = [(i, w[i]) for i in range(n)]
-        indexed_weights.sort(key=lambda x: x[1])
+            if any(len(cs) == 0 for cs in correction_sets):
+                return None
 
-        best_set = None
-        best_weight = float('inf')
+            disable_pycsp3_atexit()
 
-        # Try all subsets from size 1 to n
-        for size in range(1, n + 1):
-            # Early termination: minimum possible weight for this size
-            min_possible_weight = sum(indexed_weights[i][1] for i in range(size))
-            if min_possible_weight >= best_weight:
-                break
+            saved_ctr_items = CtrEntities.items[:]
+            saved_obj_items = ObjEntities.items[:]
+            saved_ann_items = AnnEntities.items[:]
+            saved_ann_types = AnnEntities.items_types[:] if hasattr(AnnEntities, "items_types") else []
+            saved_var_items = VarEntities.items[:]
+            saved_var_to_evar = VarEntities.varToEVar.copy()
+            saved_var_to_evar_array = VarEntities.varToEVarArray.copy()
+            saved_prefix_to_evar_array = VarEntities.prefixToEVarArray.copy()
+            saved_name2obj = Variable.name2obj.copy()
+            saved_arrays = Variable.arrays[:] if hasattr(Variable, "arrays") else []
 
-            for combo in combinations(range(n), size):
-                combo_set = set(combo)
-                combo_weight = sum(w[i] for i in combo)
+            saved_compilation = {
+                "done": Compilation.done,
+                "model": Compilation.model,
+                "string_model": Compilation.string_model,
+                "string_data": Compilation.string_data,
+                "data": Compilation.data,
+                "solve": Compilation.solve,
+                "stopwatch": Compilation.stopwatch,
+                "stopwatch2": Compilation.stopwatch2,
+                "pathname": Compilation.pathname,
+                "filename": Compilation.filename,
+            }
 
-                if combo_weight >= best_weight:
-                    continue
+            aux = auxiliary()
+            saved_aux_intro = aux._introduced_variables
+            saved_aux_collected = aux._collected_constraints
+            saved_aux_raw = aux._collected_raw_constraints
+            saved_aux_ext = aux._collected_extension_constraints
+            saved_aux_cache = aux.cache
+            saved_aux_cache_ints = aux.cache_ints.copy()
+            saved_aux_cache_nodes = aux.cache_nodes.copy()
 
-                # Check if this set hits all correction sets
-                hits_all = all(bool(combo_set & cs) for cs in correction_sets)
-                if hits_all:
-                    best_set = combo_set
-                    best_weight = combo_weight
+            try:
+                # Reset global state for an isolated CP model.
+                CtrEntities.items = []
+                ObjEntities.items = []
+                AnnEntities.items = []
+                if hasattr(AnnEntities, "items_types"):
+                    AnnEntities.items_types = []
+                VarEntities.items = []
+                VarEntities.varToEVar = {}
+                VarEntities.varToEVarArray = {}
+                VarEntities.prefixToEVarArray = {}
+                Variable.name2obj = {}
+                if hasattr(Variable, "arrays"):
+                    Variable.arrays = []
 
-            # If we found a solution at this size, no need to try larger
-            if best_set is not None:
-                break
+                aux._introduced_variables = []
+                aux._collected_constraints = []
+                aux._collected_raw_constraints = []
+                aux._collected_extension_constraints = []
+                aux.cache = []
+                aux.cache_ints = {}
+                aux.cache_nodes = {}
 
-        return best_set
+                Compilation.done = False
+                Compilation.model = None
+                Compilation.string_model = None
+                Compilation.string_data = None
+                Compilation.data = None
+                Compilation.solve = None
+                Compilation.stopwatch = None
+                Compilation.stopwatch2 = None
+                Compilation.pathname = ""
+                Compilation.filename = ""
+
+                var_id = f"hs_{uuid.uuid4().hex}"
+                select = VarArray(size=n, dom=range(2), id=var_id)
+
+                constraints = [Sum(select[i] for i in cs) >= 1 for cs in correction_sets]
+                satisfy(constraints)
+
+                if any(isinstance(weight, float) and not weight.is_integer() for weight in w):
+                    scaled_w = integer_scaling(w)
+                else:
+                    scaled_w = [int(weight) for weight in w]
+
+                minimize(Sum(select[i] * scaled_w[i] for i in range(n)))
+
+                solver_type = ACE if solver.lower() == "ace" else CHOCO
+                temp_filename = os.path.join(
+                    tempfile.gettempdir(),
+                    f"pycsp3_explain_hs_{uuid.uuid4().hex}.xml",
+                )
+                status = solve(
+                    solver=solver_type,
+                    verbose=verbose,
+                    filename=temp_filename,
+                )
+
+                try:
+                    if os.path.exists(temp_filename):
+                        os.remove(temp_filename)
+                except Exception:
+                    pass
+
+                if status not in (SAT, OPTIMUM):
+                    return None
+
+                return {i for i in range(n) if value(select[i]) == 1}
+            finally:
+                CtrEntities.items = saved_ctr_items
+                ObjEntities.items = saved_obj_items
+                AnnEntities.items = saved_ann_items
+                if hasattr(AnnEntities, "items_types"):
+                    AnnEntities.items_types = saved_ann_types
+                VarEntities.items = saved_var_items
+                VarEntities.varToEVar = saved_var_to_evar
+                VarEntities.varToEVarArray = saved_var_to_evar_array
+                VarEntities.prefixToEVarArray = saved_prefix_to_evar_array
+                Variable.name2obj = saved_name2obj
+                if hasattr(Variable, "arrays"):
+                    Variable.arrays = saved_arrays
+
+                aux._introduced_variables = saved_aux_intro
+                aux._collected_constraints = saved_aux_collected
+                aux._collected_raw_constraints = saved_aux_raw
+                aux._collected_extension_constraints = saved_aux_ext
+                aux.cache = saved_aux_cache
+                aux.cache_ints = saved_aux_cache_ints
+                aux.cache_nodes = saved_aux_cache_nodes
+
+                Compilation.done = saved_compilation["done"]
+                Compilation.model = saved_compilation["model"]
+                Compilation.string_model = saved_compilation["string_model"]
+                Compilation.string_data = saved_compilation["string_data"]
+                Compilation.data = saved_compilation["data"]
+                Compilation.solve = saved_compilation["solve"]
+                Compilation.stopwatch = saved_compilation["stopwatch"]
+                Compilation.stopwatch2 = saved_compilation["stopwatch2"]
+                Compilation.pathname = saved_compilation["pathname"]
+                Compilation.filename = saved_compilation["filename"]
+
+        def solve_hitting_set_enum() -> Optional[set]:
+            from itertools import combinations
+
+            # Try subsets in order of increasing weight
+            indexed_weights = [(i, w[i]) for i in range(n)]
+            indexed_weights.sort(key=lambda x: x[1])
+
+            best_set = None
+            best_weight = float("inf")
+
+            # Try all subsets from size 1 to n
+            for size in range(1, n + 1):
+                # Early termination: minimum possible weight for this size
+                min_possible_weight = sum(indexed_weights[i][1] for i in range(size))
+                if min_possible_weight >= best_weight:
+                    break
+
+                for combo in combinations(range(n), size):
+                    combo_set = set(combo)
+                    combo_weight = sum(w[i] for i in combo)
+
+                    if combo_weight >= best_weight:
+                        continue
+
+                    # Check if this set hits all correction sets
+                    hits_all = all(bool(combo_set & cs) for cs in correction_sets)
+                    if hits_all:
+                        best_set = combo_set
+                        best_weight = combo_weight
+
+                # If we found a solution at this size, no need to try larger
+                if best_set is not None:
+                    break
+
+            return best_set
+
+        try:
+            hitting_set = solve_hitting_set_cp()
+            if hitting_set is not None:
+                return hitting_set
+        except Exception as exc:
+            if verbose >= 0:
+                print(f"optimal_mus: hitting set CP solve failed ({exc}); using enumeration")
+
+        return solve_hitting_set_enum()
 
     # Main OCUS loop
     while True:
