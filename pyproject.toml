@@ -1,6 +1,6 @@
 [project]
 name = "pycsp3-explain"
-version = "0.1.0"
+version = "0.1.1"
 description = "Explanation tools for PyCSP3 constraint models"
 readme = "README.md"
 license = { text = "MIT" }
