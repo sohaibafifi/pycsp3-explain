@@ -10,10 +10,12 @@ import tempfile
 import traceback
 import atexit
 import re
-from typing import List, Any, Optional, Tuple, Generator, NamedTuple, Dict
+from typing import List, Any, Optional, Tuple, Generator, NamedTuple, Dict, FrozenSet
 from enum import Enum
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import lru_cache
+from collections import OrderedDict
 
 from pycsp3_explain.explain.utils import (
     flatten_constraints,
@@ -21,6 +23,104 @@ from pycsp3_explain.explain.utils import (
     Constraint,
     ConstraintList,
 )
+
+
+# ============================================================================
+# Solve Result Caching
+# ============================================================================
+
+# Default cache size for solve results
+DEFAULT_CACHE_SIZE = 1024
+
+
+class SolveCache:
+    """
+    LRU cache for solve results to avoid redundant solver calls.
+
+    The cache key is based on constraint object identities (id()) and
+    the solver configuration. This allows caching results for constraint
+    subsets that are tested multiple times during MUS/MSS computation.
+    """
+
+    def __init__(self, maxsize: int = DEFAULT_CACHE_SIZE) -> None:
+        self._cache: OrderedDict[Tuple[FrozenSet[int], FrozenSet[int], str], SolveResult] = OrderedDict()
+        self._maxsize = maxsize
+        self._hits = 0
+        self._misses = 0
+
+    def _make_key(
+        self,
+        soft: ConstraintList,
+        hard: ConstraintList,
+        solver: str
+    ) -> Tuple[FrozenSet[int], FrozenSet[int], str]:
+        """Create a cache key from constraint lists."""
+        soft_key = frozenset(id(c) for c in soft)
+        hard_key = frozenset(id(c) for c in hard)
+        return (soft_key, hard_key, solver.lower())
+
+    def get(
+        self,
+        soft: ConstraintList,
+        hard: ConstraintList,
+        solver: str
+    ) -> Optional["SolveResult"]:
+        """Get cached result if available."""
+        key = self._make_key(soft, hard, solver)
+        if key in self._cache:
+            self._hits += 1
+            # Move to end (most recently used)
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        self._misses += 1
+        return None
+
+    def put(
+        self,
+        soft: ConstraintList,
+        hard: ConstraintList,
+        solver: str,
+        result: "SolveResult"
+    ) -> None:
+        """Store a solve result in the cache."""
+        key = self._make_key(soft, hard, solver)
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        else:
+            if len(self._cache) >= self._maxsize:
+                # Remove oldest entry
+                self._cache.popitem(last=False)
+        self._cache[key] = result
+
+    def clear(self) -> None:
+        """Clear the cache."""
+        self._cache.clear()
+        self._hits = 0
+        self._misses = 0
+
+    @property
+    def stats(self) -> Dict[str, int]:
+        """Return cache statistics."""
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "size": len(self._cache),
+            "maxsize": self._maxsize,
+        }
+
+
+# Global solve cache instance
+_solve_cache = SolveCache()
+
+
+def get_solve_cache() -> SolveCache:
+    """Get the global solve cache instance."""
+    return _solve_cache
+
+
+def clear_solve_cache() -> None:
+    """Clear the global solve cache."""
+    _solve_cache.clear()
 
 
 class SolveResult(Enum):
@@ -404,21 +504,34 @@ def solve_subset(
     hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     verbose: int = -1,
-    timeout: Optional[int] = None
+    timeout: Optional[int] = None,
+    use_cache: bool = True
 ) -> SolveResult:
     """
     Solve a model with a subset of constraints.
 
     This function creates a fresh PyCSP3 model with the given constraints,
-    compiles it, and solves it.
+    compiles it, and solves it. Results are cached to avoid redundant
+    solver calls for the same constraint subsets.
 
     :param soft: List of soft constraints to include
     :param hard: List of hard constraints (always included)
     :param solver: Solver name ("ace" or "choco")
     :param verbose: Verbosity level (-1 for silent)
     :param timeout: Optional timeout in seconds
+    :param use_cache: Whether to use result caching (default True)
     :return: SolveResult indicating SAT, UNSAT, or UNKNOWN
     """
+    # Normalize constraints for cache lookup
+    soft_normalized = _normalize_constraints(soft)
+    hard_normalized = _normalize_constraints(hard)
+
+    # Check cache first (only if no timeout, as timeout affects results)
+    if use_cache and timeout is None:
+        cached = _solve_cache.get(soft_normalized, hard_normalized, solver)
+        if cached is not None:
+            return cached
+
     result, _ = _solve_subset_internal(
         soft=soft,
         hard=hard,
@@ -427,6 +540,11 @@ def solve_subset(
         timeout=timeout,
         extraction=False,
     )
+
+    # Cache the result (only if no timeout)
+    if use_cache and timeout is None:
+        _solve_cache.put(soft_normalized, hard_normalized, solver, result)
+
     return result
 
 

@@ -260,6 +260,26 @@ class TestMssOpt:
         assert len(result) == 1
         assert is_mss(result, soft, solver="ace", verbose=-1)
 
+    def test_weighted_mss_heur(self):
+        """Test mss_heuristic with weights."""
+        clear()
+        from pycsp3_explain.explain.mss import mss_heuristic, is_mss
+
+        x = Var(dom=range(10))
+
+        c0 = x == 1      # Conflicts with c1 and c2
+        c1 = x == 2      # Conflicts with c0 and c2
+        c2 = x == 3      # Conflicts with c0 and c1
+
+        soft = [c0, c1, c2]
+        weights = [100, 10, 1]  # c0 has highest weight
+
+        result = mss_heuristic(soft, weights=weights, solver="ace", verbose=-1)
+
+        # Result should be a valid MSS (exactly one constraint since all conflict)
+        assert len(result) == 1
+        assert is_mss(result, soft, solver="ace", verbose=-1)
+
 
 class TestMcsOpt:
     """Tests for weighted MCS optimization."""

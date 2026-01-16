@@ -20,6 +20,8 @@ Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subse
 - **Weighted MSS/MCS**: Optimize which constraints to keep/remove
   - `mss_opt()` - Maximize total weight of kept constraints
   - `mcs_opt()` - Minimize total weight of removed constraints
+  - `mss_heuristic()` - Heuristic weighted MSS
+  - `mcs_heuristic()` - Heuristic weighted MCS
 - **MCS (Minimal Correction Set)**: Find the minimal changes needed to restore satisfiability
   - `mcs()` - Via assumption-based MSS complement
   - `mcs_naive()` - Via naive MSS complement

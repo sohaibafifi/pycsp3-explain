@@ -504,21 +504,30 @@ def all_mus_naive(
     hard: Optional[List[Any]] = None,
     solver: str = "ace",
     verbose: int = -1,
-    max_mus: Optional[int] = None
+    max_mus: Optional[int] = None,
+    max_attempts: int = 100
 ) -> List[List[Any]]:
     """
     Find all MUSes (up to a maximum count).
 
-    This is a naive implementation that repeatedly finds MUSes and blocks them.
-    For complete enumeration, consider using MARCO algorithm.
+    This implementation uses systematic constraint ordering strategies to find
+    different MUSes. For complete enumeration, consider using MARCO algorithm.
 
-    WARNING: This can be very slow for models with many MUSes.
+    Ordering strategies used:
+    1. Original ordering
+    2. Reverse ordering
+    3. Rotate constraints to start from different positions
+    4. Order by constraint complexity (variable count)
+
+    WARNING: This can be slow for models with many MUSes and is not guaranteed
+    to find all MUSes. Use MARCO for complete enumeration.
 
     :param soft: List of soft constraints
     :param hard: List of hard constraints
     :param solver: Solver name
     :param verbose: Verbosity level
     :param max_mus: Maximum number of MUSes to find (None for all)
+    :param max_attempts: Maximum attempts to find new MUSes before giving up
     :return: List of all found MUSes
     """
     soft = flatten_constraints(soft)
@@ -530,42 +539,102 @@ def all_mus_naive(
     if not is_unsat(soft, hard, solver, verbose):
         return []  # Model is SAT, no MUS
 
-    all_muses = []
-    blocked_sets = []  # Sets of constraint indices that have been found
+    n = len(soft)
+    all_muses: List[List[Any]] = []
+    blocked_sets: Set[frozenset] = set()
+    attempts_without_new = 0
 
-    while True:
+    def try_ordering(ordering: List[Any]) -> Optional[List[Any]]:
+        """Try to find a new MUS with a given constraint ordering."""
+        nonlocal attempts_without_new
+
+        mus = mus_naive(ordering, hard, solver, verbose)
+        mus_set = frozenset(id(c) for c in mus)
+
+        if mus_set not in blocked_sets:
+            blocked_sets.add(mus_set)
+            attempts_without_new = 0
+            return mus
+        else:
+            attempts_without_new += 1
+            return None
+
+    # Strategy 1: Original ordering
+    result = try_ordering(soft)
+    if result:
+        all_muses.append(result)
+        if verbose >= 0:
+            print(f"Found MUS #{len(all_muses)} with {len(result)} constraints")
+        if max_mus is not None and len(all_muses) >= max_mus:
+            return all_muses
+
+    # Strategy 2: Reverse ordering
+    if attempts_without_new < max_attempts:
+        result = try_ordering(list(reversed(soft)))
+        if result:
+            all_muses.append(result)
+            if verbose >= 0:
+                print(f"Found MUS #{len(all_muses)} with {len(result)} constraints")
+            if max_mus is not None and len(all_muses) >= max_mus:
+                return all_muses
+
+    # Strategy 3: Order by variable count (ascending and descending)
+    if attempts_without_new < max_attempts:
+        ordered_asc = order_by_num_variables(soft, descending=False)
+        result = try_ordering(ordered_asc)
+        if result:
+            all_muses.append(result)
+            if verbose >= 0:
+                print(f"Found MUS #{len(all_muses)} with {len(result)} constraints")
+            if max_mus is not None and len(all_muses) >= max_mus:
+                return all_muses
+
+    if attempts_without_new < max_attempts:
+        ordered_desc = order_by_num_variables(soft, descending=True)
+        result = try_ordering(ordered_desc)
+        if result:
+            all_muses.append(result)
+            if verbose >= 0:
+                print(f"Found MUS #{len(all_muses)} with {len(result)} constraints")
+            if max_mus is not None and len(all_muses) >= max_mus:
+                return all_muses
+
+    # Strategy 4: Rotate orderings - start from each constraint
+    for start_idx in range(1, n):
+        if attempts_without_new >= max_attempts:
+            break
         if max_mus is not None and len(all_muses) >= max_mus:
             break
 
-        # Find a MUS avoiding already found ones
-        # Use different orderings to find different MUSes
-        import random
-        shuffled = soft.copy()
-        random.shuffle(shuffled)
+        rotated = soft[start_idx:] + soft[:start_idx]
+        result = try_ordering(rotated)
+        if result:
+            all_muses.append(result)
+            if verbose >= 0:
+                print(f"Found MUS #{len(all_muses)} with {len(result)} constraints")
 
-        mus = mus_naive(shuffled, hard, solver, verbose)
+    # Strategy 5: Exclude each previously found MUS constraint and retry
+    # This helps find MUSes that share some but not all constraints
+    for prev_mus in list(all_muses):
+        if attempts_without_new >= max_attempts:
+            break
+        if max_mus is not None and len(all_muses) >= max_mus:
+            break
 
-        # Check if this MUS is new
-        mus_set = frozenset(id(c) for c in mus)
-        if mus_set in blocked_sets:
-            # Try with original ordering
-            mus = mus_naive(soft, hard, solver, verbose)
-            mus_set = frozenset(id(c) for c in mus)
-
-            if mus_set in blocked_sets:
-                # No new MUS found
+        for exclude_c in prev_mus:
+            if attempts_without_new >= max_attempts:
                 break
 
-        all_muses.append(mus)
-        blocked_sets.append(mus_set)
-
-        if verbose >= 0:
-            print(f"Found MUS #{len(all_muses)} with {len(mus)} constraints")
-
-        # Simple termination: if we found a MUS of size 1, we're likely done
-        # (this is a heuristic, not complete)
-        if len(mus) == 1:
-            break
+            # Try ordering that puts the excluded constraint last
+            remaining = [c for c in soft if id(c) != id(exclude_c)]
+            reordered = remaining + [exclude_c]
+            result = try_ordering(reordered)
+            if result:
+                all_muses.append(result)
+                if verbose >= 0:
+                    print(f"Found MUS #{len(all_muses)} with {len(result)} constraints")
+                if max_mus is not None and len(all_muses) >= max_mus:
+                    return all_muses
 
     return all_muses
 

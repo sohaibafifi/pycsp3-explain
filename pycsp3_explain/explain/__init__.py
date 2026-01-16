@@ -27,10 +27,12 @@ from pycsp3_explain.explain.mss import (
     mss,
     mss_naive,
     mss_opt,
+    mss_heuristic,
     is_mss,
     mcs,
     mcs_naive,
     mcs_opt,
+    mcs_heuristic,
     mcs_from_mss,
     is_mcs,
 )
@@ -69,11 +71,13 @@ __all__ = [
     "mss",
     "mss_naive",
     "mss_opt",
+    "mss_heuristic",
     "is_mss",
     # MCS algorithms
     "mcs",
     "mcs_naive",
     "mcs_opt",
+    "mcs_heuristic",
     "mcs_from_mss",
     "is_mcs",
     # MARCO enumeration

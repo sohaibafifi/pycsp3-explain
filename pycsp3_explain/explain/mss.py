@@ -465,3 +465,114 @@ def mcs_opt(
     # Find optimal MSS and return its complement
     mss_result = mss_opt(soft, hard, weights, solver, verbose)
     return mcs_from_mss(mss_result, soft)
+
+
+def mss_heuristic(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    weights: Optional[List[Union[int, float]]] = None,
+    solver: str = "ace",
+    verbose: int = -1
+) -> List[Any]:
+    """
+    Compute a weighted Maximal Satisfiable Subset using greedy heuristics.
+
+    This implementation uses a GREEDY approach that prioritizes high-weight
+    constraints. It is NOT guaranteed to find the globally optimal MSS
+    (the one with maximum total weight). For true optimality, an ILP-based
+    or branch-and-bound approach would be needed.
+
+    Algorithm:
+    1. Sort constraints by weight (descending)
+    2. Greedily add constraints if they don't cause unsatisfiability
+    3. Return the resulting MSS
+
+    The greedy approach works well in practice but may miss the optimal
+    solution when there are complex interactions between constraints.
+
+    Example where greedy fails:
+    - Constraints: A (weight=5), B (weight=4), C (weight=4)
+    - A conflicts with both B and C, but B and C are compatible
+    - Greedy picks A (total=5), missing {B,C} (total=8)
+
+    :param soft: List of soft constraints
+    :param hard: List of hard constraints
+    :param weights: Weight for each soft constraint (default: all 1s)
+    :param solver: Solver name
+    :param verbose: Verbosity level
+    :return: A weighted MSS (may not be globally optimal)
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        return []
+
+    n = len(soft)
+
+    # Default weights: all 1s
+    w: List[Union[int, float]] = weights if weights is not None else [1] * n
+    if len(w) != n:
+        raise ValueError(f"weights length ({len(w)}) must match soft length ({n})")
+
+    # If all constraints are SAT, return all
+    if is_sat(soft, hard, solver, verbose):
+        return soft
+
+    # Greedy approach: order by weight (higher weight first)
+    # Try to include high-weight constraints first
+    indexed_constraints = [(i, soft[i], w[i]) for i in range(n)]
+    indexed_constraints.sort(key=lambda x: -x[2])  # Sort by weight descending
+
+    mss_indices: set = set()
+
+    for i, c, weight in indexed_constraints:
+        # Try adding constraint to current MSS
+        test_subset = [soft[j] for j in mss_indices] + [c]
+        if is_sat(test_subset, hard, solver, verbose):
+            mss_indices.add(i)
+            if verbose >= 0:
+                print(f"mss_opt: added constraint {i} (weight {weight}), "
+                      f"MSS size: {len(mss_indices)}")
+
+    return [soft[i] for i in range(n) if i in mss_indices]
+
+
+def mcs_heuristic(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    weights: Optional[List[Union[int, float]]] = None,
+    solver: str = "ace",
+    verbose: int = -1
+) -> List[Any]:
+    """
+    Compute a weighted Minimal Correction Set using greedy heuristics.
+
+    This implementation finds an MCS by computing the complement of a
+    greedy weighted MSS. Since the underlying MSS computation is greedy,
+    the resulting MCS is NOT guaranteed to be globally optimal (minimum
+    total weight of removed constraints).
+
+    The greedy approach works well in practice but may not find the
+    true minimum-weight correction set.
+
+    :param soft: List of soft constraints
+    :param hard: List of hard constraints
+    :param weights: Weight for each soft constraint (default: all 1s)
+    :param solver: Solver name
+    :param verbose: Verbosity level
+    :return: A weighted MCS (may not be globally optimal)
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        return []
+
+    # If already SAT, no correction needed
+    if is_sat(soft, hard, solver, verbose):
+        return []
+
+    # Find optimal MSS and return its complement
+    mss_result = mss_opt(soft, hard, weights, solver, verbose)
+    return mcs_from_mss(mss_result, soft)

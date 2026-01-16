@@ -259,9 +259,11 @@ def explain_unsat(
             mss,
             mss_naive,
             mss_opt,
+            mss_heuristic,
             mcs,
             mcs_naive,
             mcs_opt,
+            mcs_heuristic,
         )
         from pycsp3_explain.explain.marco import (
             marco,
@@ -284,9 +286,11 @@ def explain_unsat(
             "mss": mss,
             "mss_naive": mss_naive,
             "mss_opt": mss_opt,
+            "mss_heuristic": mss_heuristic,
             "mcs": mcs,
             "mcs_naive": mcs_naive,
             "mcs_opt": mcs_opt,
+            "mcs_heuristic": mcs_heuristic,
             "marco": marco,
             "marco_naive": marco_naive,
             "all_mus": all_mus,

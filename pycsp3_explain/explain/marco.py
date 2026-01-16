@@ -10,7 +10,7 @@ Based on:
     Constraints 21 (2016): 223-250.
 """
 
-from typing import List, Any, Optional, Iterator, Tuple, Literal, Set
+from typing import List, Any, Optional, Iterator, Tuple, Literal, Set, Dict
 
 from pycsp3_explain.explain.utils import (
     flatten_constraints,
@@ -121,74 +121,79 @@ def marco_naive(
 
     def get_next_seed() -> Optional[Set[int]]:
         """
-        Get next unexplored seed.
-        
+        Get next unexplored seed using an efficient search strategy.
+
         The seed must:
         1. Not be a superset of any discovered MUS
         2. Not be a subset of any discovered MSS
+
+        Algorithm:
+        - Start with middle cardinality to balance between SAT/UNSAT likelihood
+        - Use targeted element removal/addition based on blocking constraints
+        - Avoid exponential DFS by limiting exploration
         """
         all_indices = set(range(n))
-        
-        # Start with all constraints and try to find a valid seed
-        # Use a simple exploration: try all subsets in a smart order
-        
-        # Try the full set first if not blocked
-        if not any(mus_set <= all_indices for mus_set in blocked_mus_sets):
-            if not any(all_indices <= mss_set for mss_set in blocked_mss_sets):
-                return all_indices
-        
-        # Binary search for a valid seed
-        # The idea: find a set that is not blocked by any MUS or MSS
-        
-        # Build candidate sets by removing elements from blocked MUSes
-        # or adding elements to blocked MSSes
-        
-        from itertools import combinations
-        
-        # Strategy: iterate through all possible subsets efficiently
-        # by avoiding blocked regions
-        
-        explored: Set[frozenset] = set()
-        
-        # DFS to find unexplored seeds
-        def find_unexplored(current: Set[int]) -> Optional[Set[int]]:
-            key = frozenset(current)
-            if key in explored:
-                return None
-            explored.add(key)
-            
-            # Check if current is blocked
-            is_superset_of_mus = any(mus_set <= current for mus_set in blocked_mus_sets)
-            is_subset_of_mss = any(current <= mss_set for mss_set in blocked_mss_sets)
-            
-            if not is_superset_of_mus and not is_subset_of_mss:
-                return current
-            
-            # If blocked by MUS, try removing elements
-            if is_superset_of_mus:
-                for i in current:
-                    smaller = current - {i}
-                    if smaller:
-                        result = find_unexplored(smaller)
-                        if result is not None:
-                            return result
-            
-            return None
-        
-        # Try starting from all indices
-        result = find_unexplored(all_indices)
-        if result is not None:
-            return result
-        
-        # If that didn't work, try bottom-up from blocked MSSes
+
+        def is_blocked(candidate: Set[int]) -> bool:
+            """Check if a candidate is blocked by MUS or MSS constraints."""
+            # Blocked if superset of any MUS (would be UNSAT and not minimal)
+            if any(mus_set <= candidate for mus_set in blocked_mus_sets):
+                return True
+            # Blocked if subset of any MSS (would be SAT and not maximal)
+            if any(candidate <= mss_set for mss_set in blocked_mss_sets):
+                return True
+            return False
+
+        # Strategy 1: Try full set first
+        if not is_blocked(all_indices):
+            return all_indices
+
+        # Strategy 2: Try removing one element from each blocking MUS
+        for mus_set in blocked_mus_sets:
+            # Find an element in the MUS to remove
+            for elem in mus_set:
+                candidate = all_indices - {elem}
+                if not is_blocked(candidate):
+                    return candidate
+
+        # Strategy 3: Try adding one element to each blocking MSS
         for mss_set in blocked_mss_sets:
             remaining = all_indices - mss_set
-            for i in remaining:
-                new_set = mss_set | {i}
-                if frozenset(new_set) not in explored:
-                    if not any(mus_set <= new_set for mus_set in blocked_mus_sets):
-                        return new_set
-        
+            for elem in remaining:
+                candidate = mss_set | {elem}
+                if not is_blocked(candidate):
+                    return candidate
+
+        # Strategy 4: Try middle cardinalities
+        # This helps find seeds when we have both MUS and MSS constraints
+        for target_size in range(n // 2, 0, -1):
+            # Build candidate by starting from all and removing elements
+            candidate = set(all_indices)
+
+            # Remove elements that appear in many MUSes first
+            mus_counts: Dict[int, int] = {}
+            for mus_set in blocked_mus_sets:
+                for elem in mus_set:
+                    mus_counts[elem] = mus_counts.get(elem, 0) + 1
+
+            # Sort by MUS membership count (descending) to remove most problematic first
+            sorted_by_mus = sorted(all_indices, key=lambda x: -mus_counts.get(x, 0))
+
+            for elem in sorted_by_mus:
+                if len(candidate) <= target_size:
+                    break
+                candidate.remove(elem)
+
+            if candidate and not is_blocked(candidate):
+                return candidate
+
+        # Strategy 5: Try individual constraints
+        for i in all_indices:
+            candidate = {i}
+            if not is_blocked(candidate):
+                return candidate
+
+        # No valid seed found - enumeration complete
         return None
 
     def shrink_to_mus(seed_indices: Set[int]) -> Set[int]:
