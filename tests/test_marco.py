@@ -9,6 +9,7 @@ from pycsp3_explain.explain.marco import (
     marco_naive,
     all_mus,
     all_mcs,
+    MapSolver,
 )
 from pycsp3_explain.explain.mus import is_mus
 from pycsp3_explain.explain.mss import is_mcs
@@ -291,6 +292,111 @@ class TestMarcoValidation:
             if result_type == "MCS":
                 assert is_mcs(subset, soft, solver="ace", verbose=-1), \
                     f"Invalid MCS: {subset}"
+
+
+class TestMapSolver:
+    """Unit tests for the MapSolver class (SAT-based seed generator)."""
+
+    def test_initial_solve_returns_full_set(self):
+        """Test that initial solve returns full set when no clauses."""
+        solver = MapSolver(3)
+        result = solver.solve()
+        # With no constraints, the DPLL prefers True, so should return all vars
+        assert result is not None
+        # The solver tries True first for each variable
+        assert result == {0, 1, 2}
+
+    def test_block_up_prevents_superset(self):
+        """Test that block_up prevents exploring supersets of MUS."""
+        solver = MapSolver(3)
+        # Block MUS {0, 1} - no superset containing both 0 and 1 should be returned
+        solver.block_up({0, 1})
+
+        # Now solve - result should not contain both 0 and 1
+        result = solver.solve()
+        assert result is not None
+        assert not ({0, 1} <= result), "Result should not be superset of blocked MUS"
+
+    def test_block_down_prevents_subset(self):
+        """Test that block_down prevents exploring subsets of MSS."""
+        solver = MapSolver(3)
+        # Block MSS {0, 1} - any subset of {0, 1} (i.e., {}, {0}, {1}, {0,1}) blocked
+        # The blocking clause is (s_2) since MCS = {2}
+        solver.block_down({0, 1})
+
+        # Now solve - result must contain element 2 (the MCS)
+        result = solver.solve()
+        assert result is not None
+        assert 2 in result, "Result must contain MCS element"
+
+    def test_exhaustive_exploration(self):
+        """Test that MapSolver eventually exhausts all subsets."""
+        solver = MapSolver(2)
+
+        # Collect all seeds until exhausted
+        seeds = []
+        while True:
+            result = solver.solve()
+            if result is None:
+                break
+            seeds.append(frozenset(result))
+            # Block this seed as if it were a MUS (block supersets)
+            # and also as if it were an MSS (block subsets)
+            # This simulates MARCO exploring completely
+            solver.block_up(result)
+            solver.block_down(result)
+
+        # With 2 variables, there are 4 possible subsets
+        # Each seed blocks its supersets and subsets
+        # First seed {0,1} blocks supersets of {0,1} (just itself)
+        # and subsets of {0,1} (all 4 subsets)
+        # So after first seed, all are blocked
+        assert len(seeds) == 1
+        assert frozenset({0, 1}) in seeds
+
+    def test_multiple_blocking_clauses(self):
+        """Test that multiple blocking clauses work together."""
+        solver = MapSolver(4)
+
+        # Block MUS {0, 1} - prevents any superset containing both
+        solver.block_up({0, 1})
+        # Block MUS {2, 3} - prevents any superset containing both
+        solver.block_up({2, 3})
+
+        result = solver.solve()
+        assert result is not None
+
+        # Result cannot have both {0,1} and cannot have both {2,3}
+        has_01 = {0, 1} <= result
+        has_23 = {2, 3} <= result
+        assert not has_01, "Should not have both 0 and 1"
+        assert not has_23, "Should not have both 2 and 3"
+
+    def test_empty_mss_blocks_all(self):
+        """Test that blocking empty MSS makes solver return None."""
+        solver = MapSolver(2)
+
+        # Empty MSS means all constraints must be removed
+        # The blocking clause should be (s_0 ∨ s_1) - at least one must be True
+        # This doesn't block all, so first verify this
+        solver.block_down(set())  # Empty MSS
+
+        result = solver.solve()
+        # With clause (s_0 ∨ s_1), any non-empty set works
+        assert result is not None
+        assert len(result) >= 1
+
+    def test_full_mss_terminates(self):
+        """Test that blocking full MSS eventually terminates enumeration."""
+        solver = MapSolver(2)
+
+        # Full MSS {0, 1} means MCS is empty
+        # This adds an empty clause, making formula UNSAT
+        solver.block_down({0, 1})
+
+        result = solver.solve()
+        # Empty clause means UNSAT
+        assert result is None
 
 
 if __name__ == "__main__":
