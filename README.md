@@ -7,7 +7,7 @@ Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subse
 - **MUS (Minimal Unsatisfiable Subset)**: Find the minimal set of conflicting constraints
   - `mus()` - Assumption-based using ACE core extraction
   - `mus_naive()` - Deletion-based (works with any solver)
-  - `quickxplain_naive()` - Preferred MUS based on constraint ordering
+  - `quickxplain()` - Preferred MUS using QuickXplain (Junker, 2004)
 - **Optimal MUS (SMUS/OCUS)**: Prefer smaller or lower-weight explanations
   - `smus()` - Smallest MUS (fewest constraints)
   - `optimal_mus()` - Minimum total weight MUS
@@ -113,7 +113,7 @@ Given an infeasible constraint satisfaction problem (CSP), explanation tools hel
 ### MUS Functions
 - `mus(soft, hard=None, solver="ace")` - Assumption-based MUS
 - `mus_naive(soft, hard=None, solver="ace")` - Deletion-based MUS
-- `quickxplain_naive(soft, hard=None, solver="ace")` - Preferred MUS
+- `quickxplain(soft, hard=None, solver="ace")` - Assumption-based preferred MUS (Junker, 2004)
 - `is_mus(subset, hard=None, solver="ace")` - Verify MUS validity
 - `all_mus_naive(soft, hard=None, solver="ace")` - Enumerate MUSes (naive)
 - `optimal_mus(soft, hard=None, weights=None, solver="ace")` - Minimum-weight MUS

@@ -8,7 +8,7 @@ adding impossible constraints to a classic N-Queens problem.
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain_naive, optimal_mus
+from pycsp3_explain.explain.mus import mus, mus_naive, optimal_mus, quickxplain
 from pycsp3_explain.explain.marco import marco
 
 
@@ -121,8 +121,8 @@ def main():
     print("\nComparison:")
     print("\t   Same constraints:" if same else "\t   Different MUSes (both minimal)")
 
-    print("\n\t3 using the quickxplain naive to identify preferred conflicting constraints...")
-    qx_mus = quickxplain_naive(constraints, solver="ace", verbose=-1)
+    print("\n\t3 using the quickxplain to identify preferred conflicting constraints...")
+    qx_mus = quickxplain(constraints, solver="ace", verbose=-1)
     print(f"\n\t Result: Found {len(qx_mus)} conflicting constraint(s)")
     print("   Preferred Minimal Unsatisfiable Subset:")
     for c in qx_mus:

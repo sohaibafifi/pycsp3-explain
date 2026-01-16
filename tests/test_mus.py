@@ -8,7 +8,7 @@ import os
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain_naive, is_mus
+from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain, is_mus
 from pycsp3_explain.solvers.wrapper import is_sat, is_unsat
 
 
@@ -121,7 +121,7 @@ class TestQuickXplain:
         c1 = x[0] == 7  # Conflicts with c0
 
         soft = [c0, c1]
-        mus = quickxplain_naive(soft, solver="ace", verbose=-1)
+        mus = quickxplain(soft, solver="ace", verbose=-1)
 
         assert len(mus) == 2
         assert constraint_in_list(c0, mus)
@@ -140,12 +140,107 @@ class TestQuickXplain:
 
         # All pairs conflict, but {c0, c1} should be preferred
         soft = [c0, c1, c2]
-        mus = quickxplain_naive(soft, solver="ace", verbose=-1)
+        mus = quickxplain(soft, solver="ace", verbose=-1)
 
         # Should get a MUS of size 2
         assert len(mus) == 2
         # Should prefer c0 (first constraint)
         assert constraint_in_list(c0, mus)
+
+
+class TestQuickXplainBehavior:
+    """Tests for QuickXplain algorithm behavior."""
+
+    def setup_method(self):
+        """Clear PyCSP3 state before each test."""
+        clear()
+
+    def test_quickxplain_simple(self):
+        """Test QuickXplain on a simple conflict."""
+        clear()
+
+        x = VarArray(size=2, dom=range(10))
+
+        c0 = x[0] == 5
+        c1 = x[0] == 7  # Conflicts with c0
+
+        soft = [c0, c1]
+        result = quickxplain(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+
+    def test_quickxplain_preference(self):
+        """Test that QuickXplain respects constraint ordering."""
+        clear()
+
+        x = Var(dom=range(10))
+
+        # Multiple possible MUSes, QuickXplain should prefer earlier constraints
+        c0 = x == 1  # Preferred
+        c1 = x == 2
+        c2 = x == 3
+
+        # All pairs conflict, but {c0, c1} should be preferred
+        soft = [c0, c1, c2]
+        result = quickxplain(soft, solver="ace", verbose=-1)
+
+        # Should get a MUS of size 2
+        assert len(result) == 2
+        # Should prefer c0 (first constraint)
+        assert constraint_in_list(c0, result)
+        # Result must be a valid MUS
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_quickxplain_with_hard(self):
+        """Test QuickXplain with hard constraints."""
+        clear()
+
+        x = VarArray(size=2, dom=range(10))
+
+        hard = [x[0] >= 5]  # x[0] must be at least 5
+        c0 = x[0] <= 3      # Conflicts with hard
+        c1 = x[1] >= 0      # Independent
+
+        soft = [c0, c1]
+        result = quickxplain(soft, hard=hard, solver="ace", verbose=-1)
+
+        # Only c0 should be in the MUS (conflicts with hard)
+        assert len(result) == 1
+        assert constraint_in_list(c0, result)
+
+    def test_quickxplain_valid_mus(self):
+        """Test that QuickXplain produces a valid MUS."""
+        clear()
+
+        x = Var(dom=range(10))
+
+        c0 = x == 1
+        c1 = x == 2
+        c2 = x >= 0  # Always true but still part of the model
+
+        soft = [c0, c1, c2]
+
+        result = quickxplain(soft, solver="ace", verbose=-1)
+
+        assert is_mus(result, solver="ace", verbose=-1)
+        assert len(result) == 2
+
+    def test_quickxplain_single_constraint_conflict(self):
+        """Test QuickXplain when single constraint is UNSAT with hard."""
+        clear()
+
+        x = Var(dom=range(10))
+
+        hard = [x >= 5]
+        c0 = x < 3  # Single constraint conflicts with hard
+
+        soft = [c0]
+        result = quickxplain(soft, hard=hard, solver="ace", verbose=-1)
+
+        assert len(result) == 1
+        assert constraint_in_list(c0, result)
 
 
 class TestMusAssumptionBased:

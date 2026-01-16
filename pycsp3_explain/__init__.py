@@ -42,7 +42,7 @@ __version__ = "0.1.0"
 from pycsp3_explain.explain.mus import (
     mus,
     mus_naive,
-    quickxplain_naive,
+    quickxplain,
     is_mus,
     all_mus_naive,
     optimal_mus,
@@ -101,7 +101,7 @@ __all__ = [
     # MUS algorithms
     "mus",
     "mus_naive",
-    "quickxplain_naive",
+    "quickxplain",
     "is_mus",
     "all_mus_naive",
     # Optimal MUS algorithms

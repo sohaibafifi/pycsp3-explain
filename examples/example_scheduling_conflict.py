@@ -8,7 +8,7 @@ where tasks have conflicting time constraints.
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain_naive, optimal_mus
+from pycsp3_explain.explain.mus import mus, mus_naive, optimal_mus, quickxplain
 from pycsp3_explain.explain.marco import marco
 
 
@@ -124,8 +124,7 @@ def main():
 
     print("\n3. Finding preferred MUS with QuickXplain...")
     print("   (Prefers earlier constraints in case of multiple MUSes)")
-    qx_mus = quickxplain_naive(constraints, solver="ace", verbose=-1)
-
+    qx_mus = quickxplain(constraints, solver="ace", verbose=-1)
     print(f"\n\tQuickXplain Result: {len(qx_mus)} constraint(s)")
     for c in qx_mus:
         idx = find_constraint_index(c, constraints)

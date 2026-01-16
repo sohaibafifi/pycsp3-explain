@@ -247,7 +247,7 @@ def explain_unsat(
         from pycsp3_explain.explain.mus import (
             mus,
             mus_naive,
-            quickxplain_naive,
+            quickxplain,
             optimal_mus,
             optimal_mus_naive,
             smus,
@@ -275,8 +275,7 @@ def explain_unsat(
         algo_map = {
             "mus": mus,
             "mus_naive": mus_naive,
-            "quickxplain": quickxplain_naive,
-            "quickxplain_naive": quickxplain_naive,
+            "quickxplain": quickxplain,
             "optimal_mus": optimal_mus,
             "optimal_mus_naive": optimal_mus_naive,
             "smus": smus,

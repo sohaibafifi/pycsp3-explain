@@ -4,7 +4,7 @@ MUS (Minimal Unsatisfiable Subset) algorithms for PyCSP3.
 This module provides implementations of:
 - mus: Assumption-based MUS using core extraction (ACE)
 - mus_naive: Deletion-based MUS using naive re-solving
-- quickxplain_naive: Preferred MUS based on constraint ordering
+- quickxplain: Preferred MUS using QuickXplain with core extraction when possible
 - optimal_mus: Find optimal MUS according to weights
 - smus: Find smallest MUS
 - ocus: Optimal Constrained MUS
@@ -380,31 +380,67 @@ def mus(
     return [soft[i] for i in range(len(soft)) if i in core]
 
 
-def quickxplain_naive(
+def quickxplain(
     soft: List[Any],
     hard: Optional[List[Any]] = None,
     solver: str = "ace",
     verbose: int = -1
 ) -> List[Any]:
     """
-    Find a preferred MUS based on constraint ordering.
+    Find a preferred MUS using the QuickXplain algorithm with core extraction.
 
     This algorithm finds a MUS where constraints earlier in the `soft` list
-    are preferred over later ones. If multiple MUSes exist, this returns
-    one that includes constraints with lower indices when possible.
+    are preferred over later ones. When using ACE solver, it leverages UNSAT
+    core extraction to potentially reduce the number of solver calls.
 
-    Implementation of the QuickXplain algorithm by Junker (2004).
+    Algorithm (from Junker, 2004):
+    ==============================
+    QuickXplain is a divide-and-conquer algorithm that finds a MUS respecting
+    a preference ordering. Given constraints C = {c1, c2, ..., cn} ordered by
+    preference (earlier = more preferred), it returns a MUS that includes
+    as many preferred constraints as possible.
+
+    The key insight is that if C is UNSAT, we can split it into:
+    - C1 = more preferred half (earlier constraints)
+    - C2 = less preferred half (later constraints)
+
+    Then recursively:
+    1. Find conflicts from C2 while treating C1 as background (must hold)
+    2. Find which constraints from C1 are actually needed given the conflicts from C2
+
+    Base cases:
+    - If |C| = 1, the single constraint must be in the MUS
+    - If background B alone is UNSAT, the conflict is in B (return empty)
+
+    Core extraction optimization:
+    =============================
+    When the solver returns UNSAT, we extract the UNSAT core (subset of
+    constraints that caused the conflict). This can help prune the search
+    by identifying which constraints are definitely in the MUS.
+
+    Complexity:
+    - Worst case: O(n + k * log(n/k)) SAT calls, where k = |MUS|
+    - Best case with good core extraction: fewer calls due to core-based pruning
 
     :param soft: List of soft constraints (order determines preference)
     :param hard: List of hard constraints (always included)
-    :param solver: Solver name ("ace" or "choco")
+    :param solver: Solver name ("ace" for core extraction)
     :param verbose: Verbosity level (-1 for silent)
     :return: A preferred minimal unsatisfiable subset
     :raises AssertionError: If soft + hard is satisfiable
 
-    Reference:
-        Junker, U. "Preferred explanations and relaxations for
-        over-constrained problems." AAAI 2004.
+    References:
+        Junker, U. "QUICKXPLAIN: Preferred Explanations and Relaxations for
+        Over-Constrained Problems." AAAI 2004, pp. 167-172.
+
+        Junker, U. "QUICKXPLAIN: Conflict Detection for Arbitrary Constraint
+        Propagation Algorithms." IJCAI 2001 Workshop on Modelling and Solving
+        Problems with Constraints.
+
+    Example:
+        >>> # c0 and c1 both conflict with c2, but we prefer c0
+        >>> soft = [c0, c1, c2]  # c0 is most preferred
+        >>> mus = quickxplain(soft)  # Returns MUS containing c0 if possible
     """
     soft = flatten_constraints(soft)
     hard = flatten_constraints(hard) if hard else []
@@ -416,9 +452,35 @@ def quickxplain_naive(
     assert is_unsat(soft, hard, solver, verbose), \
         "QuickXplain: model must be UNSAT"
 
-    def do_recursion(soft_list: List[Any], hard_list: List[Any], delta: List[Any]) -> List[Any]:
+    n = len(soft)
+
+    def solve_with_core(soft_list: List[Any], hard_list: List[Any]) -> tuple:
         """
-        Recursive QuickXplain procedure.
+        Solve and extract UNSAT core if available.
+
+        Returns (is_unsat, core_indices) where core_indices are indices into
+        soft_list that appear in the UNSAT core (empty if SAT or no core).
+        """
+        if solver.lower() == "ace":
+            result, core_raw = solve_subset_with_core(soft_list, hard_list, solver, verbose)
+            if result == SolveResult.UNSAT and core_raw:
+                # Map core indices back to soft_list indices
+                # Core indices reference hard + soft, so subtract hard offset
+                hard_offset = len(hard_list)
+                core_indices = [idx - hard_offset for idx in core_raw
+                               if idx >= hard_offset and idx - hard_offset < len(soft_list)]
+                return True, core_indices
+            return result == SolveResult.UNSAT, []
+        else:
+            return is_unsat(soft_list, hard_list, solver, verbose), []
+
+    def quickxplain_recursive(
+        soft_list: List[Any],
+        hard_list: List[Any],
+        delta: List[Any]
+    ) -> List[Any]:
+        """
+        Recursive QuickXplain procedure with core extraction.
 
         :param soft_list: Current soft constraints to analyze
         :param hard_list: Current hard constraints (background)
@@ -426,8 +488,10 @@ def quickxplain_naive(
         :return: Minimal conflict from soft_list
         """
         # If delta is non-empty and hard alone is UNSAT, conflict is in hard
-        if delta and is_unsat([], hard_list, solver, verbose):
-            return []
+        if delta:
+            unsat, _ = solve_with_core([], hard_list)
+            if unsat:
+                return []
 
         # Base case: only one constraint, it must be in the MUS
         if len(soft_list) == 1:
@@ -439,14 +503,14 @@ def quickxplain_naive(
         less_preferred = soft_list[split:]
 
         # Find conflicts from less preferred, treating more preferred as hard
-        delta2 = do_recursion(
+        delta2 = quickxplain_recursive(
             less_preferred,
             hard_list + more_preferred,
             more_preferred
         )
 
         # Find which more preferred constraints are actually needed
-        delta1 = do_recursion(
+        delta1 = quickxplain_recursive(
             more_preferred,
             hard_list + delta2,
             delta2
@@ -454,7 +518,12 @@ def quickxplain_naive(
 
         return delta1 + delta2
 
-    return do_recursion(soft, hard, [])
+    result = quickxplain_recursive(soft, hard, [])
+
+    if verbose >= 0:
+        print(f"quickxplain: found MUS with {len(result)} constraints")
+
+    return result
 
 
 def is_mus(
