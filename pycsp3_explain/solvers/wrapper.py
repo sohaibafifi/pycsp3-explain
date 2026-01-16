@@ -10,11 +10,17 @@ import tempfile
 import traceback
 import atexit
 import re
-from typing import List, Any, Optional, Tuple, Generator
+from typing import List, Any, Optional, Tuple, Generator, NamedTuple, Dict
 from enum import Enum
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 
-from pycsp3_explain.explain.utils import flatten_constraints, normalize_constraint_list
+from pycsp3_explain.explain.utils import (
+    flatten_constraints,
+    normalize_constraint_list,
+    Constraint,
+    ConstraintList,
+)
 
 
 class SolveResult(Enum):
@@ -25,30 +31,61 @@ class SolveResult(Enum):
     ERROR = "error"
 
 
+# Regex patterns for core extraction from ACE solver output
 _ANSI_ESCAPE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+# Pattern: c<number>( - constraint index followed by opening paren
+_CORE_PATTERN_WITH_PAREN = re.compile(r"(?<!\()c(\d+)(?=\()")
+# Fallback pattern: c<number> - just constraint index
+_CORE_PATTERN_SIMPLE = re.compile(r"\bc(\d+)\b")
 
 
 def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from text."""
     return _ANSI_ESCAPE.sub("", text)
 
 
 def _parse_core_indices(core_line: Optional[str]) -> List[int]:
+    """
+    Parse constraint indices from ACE solver core output.
+
+    ACE outputs core information in various formats:
+    - "c0(x[0] == 5) c1(x[0] == 7)" - with constraint content
+    - "c0 c1 c2" - just indices
+
+    :param core_line: Raw core output string from solver
+    :return: List of constraint indices found in the output
+    """
     if not core_line:
         return []
+
     cleaned = _strip_ansi(core_line)
-    matches = re.findall(r"(?<!\()c(\d+)(?=\()", cleaned)
+
+    # Try pattern with parentheses first (more specific)
+    matches = _CORE_PATTERN_WITH_PAREN.findall(cleaned)
+
+    # Fall back to simple pattern if no matches
     if not matches:
-        matches = re.findall(r"c(\d+)", cleaned)
-    return [int(m) for m in matches]
+        matches = _CORE_PATTERN_SIMPLE.findall(cleaned)
+
+    # Convert to integers and remove duplicates while preserving order
+    seen: set[int] = set()
+    result: List[int] = []
+    for m in matches:
+        idx = int(m)
+        if idx not in seen:
+            seen.add(idx)
+            result.append(idx)
+
+    return result
 
 
-def _normalize_constraints(constraints: Optional[List[Any]]) -> List[Any]:
+def _normalize_constraints(constraints: Optional[ConstraintList]) -> ConstraintList:
     """Normalize and flatten constraints."""
     items = normalize_constraint_list(constraints)
     return flatten_constraints(items)
 
 
-def disable_pycsp3_atexit():
+def disable_pycsp3_atexit() -> None:
     """
     Disable PyCSP3's atexit callback to prevent errors when Compilation state is invalid.
 
@@ -57,10 +94,174 @@ def disable_pycsp3_atexit():
     """
     try:
         from pycsp3 import end as pycsp3_end
-        # Unregister PyCSP3's end function from atexit
         atexit.unregister(pycsp3_end)
     except (ImportError, AttributeError):
         pass
+
+
+@dataclass
+class _PyCSP3State:
+    """Saved PyCSP3 global state for restoration."""
+    # Entity state
+    ctr_items: List[Any] = field(default_factory=list)
+    obj_items: List[Any] = field(default_factory=list)
+    ann_items: List[Any] = field(default_factory=list)
+    ann_types: List[Any] = field(default_factory=list)
+    var_items: List[Any] = field(default_factory=list)
+    var_to_evar: Dict[Any, Any] = field(default_factory=dict)
+    var_to_evar_array: Dict[Any, Any] = field(default_factory=dict)
+    prefix_to_evar_array: Dict[Any, Any] = field(default_factory=dict)
+    name2obj: Dict[str, Any] = field(default_factory=dict)
+    arrays: List[Any] = field(default_factory=list)
+
+    # Compilation state
+    compilation_done: bool = False
+    compilation_model: Any = None
+    compilation_string_model: Any = None
+    compilation_string_data: Any = None
+    compilation_data: Any = None
+    compilation_solve: Any = None
+    compilation_stopwatch: Any = None
+    compilation_stopwatch2: Any = None
+    compilation_pathname: str = ""
+    compilation_filename: str = ""
+
+    # Auxiliary state
+    aux_introduced: List[Any] = field(default_factory=list)
+    aux_collected: List[Any] = field(default_factory=list)
+    aux_raw: List[Any] = field(default_factory=list)
+    aux_ext: List[Any] = field(default_factory=list)
+    aux_cache: List[Any] = field(default_factory=list)
+    aux_cache_ints: Dict[Any, Any] = field(default_factory=dict)
+    aux_cache_nodes: Dict[Any, Any] = field(default_factory=dict)
+
+
+def _save_pycsp3_state() -> _PyCSP3State:
+    """Save current PyCSP3 global state."""
+    from pycsp3.classes.entities import CtrEntities, VarEntities, ObjEntities, AnnEntities
+    from pycsp3.classes.main.variables import Variable
+    from pycsp3.classes.main.constraints import auxiliary
+    from pycsp3.compiler import Compilation
+
+    aux = auxiliary()
+
+    return _PyCSP3State(
+        ctr_items=CtrEntities.items[:],
+        obj_items=ObjEntities.items[:],
+        ann_items=AnnEntities.items[:],
+        ann_types=AnnEntities.items_types[:] if hasattr(AnnEntities, "items_types") else [],
+        var_items=VarEntities.items[:],
+        var_to_evar=VarEntities.varToEVar.copy(),
+        var_to_evar_array=VarEntities.varToEVarArray.copy(),
+        prefix_to_evar_array=VarEntities.prefixToEVarArray.copy(),
+        name2obj=Variable.name2obj.copy(),
+        arrays=Variable.arrays[:] if hasattr(Variable, "arrays") else [],
+        compilation_done=Compilation.done,
+        compilation_model=Compilation.model,
+        compilation_string_model=Compilation.string_model,
+        compilation_string_data=Compilation.string_data,
+        compilation_data=Compilation.data,
+        compilation_solve=Compilation.solve,
+        compilation_stopwatch=Compilation.stopwatch,
+        compilation_stopwatch2=Compilation.stopwatch2,
+        compilation_pathname=Compilation.pathname,
+        compilation_filename=Compilation.filename,
+        aux_introduced=aux._introduced_variables,
+        aux_collected=aux._collected_constraints,
+        aux_raw=aux._collected_raw_constraints,
+        aux_ext=aux._collected_extension_constraints,
+        aux_cache=aux.cache,
+        aux_cache_ints=aux.cache_ints.copy(),
+        aux_cache_nodes=aux.cache_nodes.copy(),
+    )
+
+
+def _restore_pycsp3_state(state: _PyCSP3State) -> None:
+    """Restore PyCSP3 global state from saved state."""
+    from pycsp3.classes.entities import CtrEntities, VarEntities, ObjEntities, AnnEntities
+    from pycsp3.classes.main.variables import Variable
+    from pycsp3.classes.main.constraints import auxiliary
+    from pycsp3.compiler import Compilation
+
+    # Restore entity state
+    CtrEntities.items = state.ctr_items
+    ObjEntities.items = state.obj_items
+    AnnEntities.items = state.ann_items
+    if hasattr(AnnEntities, "items_types"):
+        AnnEntities.items_types = state.ann_types
+    VarEntities.items = state.var_items
+    VarEntities.varToEVar = state.var_to_evar
+    VarEntities.varToEVarArray = state.var_to_evar_array
+    VarEntities.prefixToEVarArray = state.prefix_to_evar_array
+    Variable.name2obj = state.name2obj
+    if hasattr(Variable, "arrays"):
+        Variable.arrays = state.arrays
+
+    # Restore auxiliary state
+    aux = auxiliary()
+    aux._introduced_variables = state.aux_introduced
+    aux._collected_constraints = state.aux_collected
+    aux._collected_raw_constraints = state.aux_raw
+    aux._collected_extension_constraints = state.aux_ext
+    aux.cache = state.aux_cache
+    aux.cache_ints = state.aux_cache_ints
+    aux.cache_nodes = state.aux_cache_nodes
+
+    # Restore compilation state
+    Compilation.done = state.compilation_done
+    Compilation.model = state.compilation_model
+    Compilation.string_model = state.compilation_string_model
+    Compilation.string_data = state.compilation_string_data
+    Compilation.data = state.compilation_data
+    Compilation.solve = state.compilation_solve
+    Compilation.stopwatch = state.compilation_stopwatch
+    Compilation.stopwatch2 = state.compilation_stopwatch2
+    Compilation.pathname = state.compilation_pathname
+    Compilation.filename = state.compilation_filename
+
+
+def _clear_pycsp3_state() -> None:
+    """Clear all PyCSP3 global state for a fresh subproblem."""
+    from pycsp3.classes.entities import CtrEntities, VarEntities, ObjEntities, AnnEntities
+    from pycsp3.classes.main.variables import Variable
+    from pycsp3.classes.main.constraints import auxiliary
+    from pycsp3.compiler import Compilation
+
+    # Clear entity state
+    CtrEntities.items = []
+    ObjEntities.items = []
+    AnnEntities.items = []
+    if hasattr(AnnEntities, "items_types"):
+        AnnEntities.items_types = []
+    VarEntities.items = []
+    VarEntities.varToEVar = {}
+    VarEntities.varToEVarArray = {}
+    VarEntities.prefixToEVarArray = {}
+    Variable.name2obj = {}
+    if hasattr(Variable, "arrays"):
+        Variable.arrays = []
+
+    # Clear auxiliary state
+    aux = auxiliary()
+    aux._introduced_variables = []
+    aux._collected_constraints = []
+    aux._collected_raw_constraints = []
+    aux._collected_extension_constraints = []
+    aux.cache = []
+    aux.cache_ints = {}
+    aux.cache_nodes = {}
+
+    # Clear compilation state
+    Compilation.done = False
+    Compilation.model = None
+    Compilation.string_model = None
+    Compilation.string_data = None
+    Compilation.data = None
+    Compilation.solve = None
+    Compilation.stopwatch = None
+    Compilation.stopwatch2 = None
+    Compilation.pathname = ""
+    Compilation.filename = ""
 
 
 @contextmanager
@@ -78,129 +279,18 @@ def clean_pycsp3_state() -> Generator[None, None, None]:
         # Original state is restored
     """
     disable_pycsp3_atexit()
-
-    from pycsp3.classes.entities import (
-        CtrEntities,
-        VarEntities,
-        ObjEntities,
-        AnnEntities,
-    )
-    from pycsp3.classes.main.variables import Variable
-    from pycsp3.classes.main.constraints import auxiliary
-    from pycsp3.compiler import Compilation
-
-    # Save constraint/objective/annotation state
-    saved_ctr_items = CtrEntities.items[:]
-    saved_obj_items = ObjEntities.items[:]
-    saved_ann_items = AnnEntities.items[:]
-    saved_ann_types = AnnEntities.items_types[:] if hasattr(AnnEntities, "items_types") else []
-
-    # Save variable state
-    saved_var_items = VarEntities.items[:]
-    saved_var_to_evar = VarEntities.varToEVar.copy()
-    saved_var_to_evar_array = VarEntities.varToEVarArray.copy()
-    saved_prefix_to_evar_array = VarEntities.prefixToEVarArray.copy()
-    saved_name2obj = Variable.name2obj.copy()
-    saved_arrays = Variable.arrays[:] if hasattr(Variable, "arrays") else []
-
-    # Save compilation state
-    saved_compilation = {
-        "done": Compilation.done,
-        "model": Compilation.model,
-        "string_model": Compilation.string_model,
-        "string_data": Compilation.string_data,
-        "data": Compilation.data,
-        "solve": Compilation.solve,
-        "stopwatch": Compilation.stopwatch,
-        "stopwatch2": Compilation.stopwatch2,
-        "pathname": Compilation.pathname,
-        "filename": Compilation.filename,
-    }
-
-    # Save auxiliary constraint state
-    aux = auxiliary()
-    saved_aux_intro = aux._introduced_variables
-    saved_aux_collected = aux._collected_constraints
-    saved_aux_raw = aux._collected_raw_constraints
-    saved_aux_ext = aux._collected_extension_constraints
-    saved_aux_cache = aux.cache
-    saved_aux_cache_ints = aux.cache_ints.copy()
-    saved_aux_cache_nodes = aux.cache_nodes.copy()
+    saved_state = _save_pycsp3_state()
 
     try:
-        # Clear all state for fresh subproblem
-        CtrEntities.items = []
-        ObjEntities.items = []
-        AnnEntities.items = []
-        if hasattr(AnnEntities, "items_types"):
-            AnnEntities.items_types = []
-        VarEntities.items = []
-        VarEntities.varToEVar = {}
-        VarEntities.varToEVarArray = {}
-        VarEntities.prefixToEVarArray = {}
-        Variable.name2obj = {}
-        if hasattr(Variable, "arrays"):
-            Variable.arrays = []
-
-        aux._introduced_variables = []
-        aux._collected_constraints = []
-        aux._collected_raw_constraints = []
-        aux._collected_extension_constraints = []
-        aux.cache = []
-        aux.cache_ints = {}
-        aux.cache_nodes = {}
-
-        Compilation.done = False
-        Compilation.model = None
-        Compilation.string_model = None
-        Compilation.string_data = None
-        Compilation.data = None
-        Compilation.solve = None
-        Compilation.stopwatch = None
-        Compilation.stopwatch2 = None
-        Compilation.pathname = ""
-        Compilation.filename = ""
-
+        _clear_pycsp3_state()
         yield
-
     finally:
-        # Restore all state
-        CtrEntities.items = saved_ctr_items
-        ObjEntities.items = saved_obj_items
-        AnnEntities.items = saved_ann_items
-        if hasattr(AnnEntities, "items_types"):
-            AnnEntities.items_types = saved_ann_types
-        VarEntities.items = saved_var_items
-        VarEntities.varToEVar = saved_var_to_evar
-        VarEntities.varToEVarArray = saved_var_to_evar_array
-        VarEntities.prefixToEVarArray = saved_prefix_to_evar_array
-        Variable.name2obj = saved_name2obj
-        if hasattr(Variable, "arrays"):
-            Variable.arrays = saved_arrays
-
-        aux._introduced_variables = saved_aux_intro
-        aux._collected_constraints = saved_aux_collected
-        aux._collected_raw_constraints = saved_aux_raw
-        aux._collected_extension_constraints = saved_aux_ext
-        aux.cache = saved_aux_cache
-        aux.cache_ints = saved_aux_cache_ints
-        aux.cache_nodes = saved_aux_cache_nodes
-
-        Compilation.done = saved_compilation["done"]
-        Compilation.model = saved_compilation["model"]
-        Compilation.string_model = saved_compilation["string_model"]
-        Compilation.string_data = saved_compilation["string_data"]
-        Compilation.data = saved_compilation["data"]
-        Compilation.solve = saved_compilation["solve"]
-        Compilation.stopwatch = saved_compilation["stopwatch"]
-        Compilation.stopwatch2 = saved_compilation["stopwatch2"]
-        Compilation.pathname = saved_compilation["pathname"]
-        Compilation.filename = saved_compilation["filename"]
+        _restore_pycsp3_state(saved_state)
 
 
 def _solve_subset_internal(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     verbose: int = -1,
     timeout: Optional[int] = None,
@@ -310,8 +400,8 @@ def _solve_subset_internal(
 
 
 def solve_subset(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     verbose: int = -1,
     timeout: Optional[int] = None
@@ -341,8 +431,8 @@ def solve_subset(
 
 
 def solve_subset_with_core(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     verbose: int = -1,
     timeout: Optional[int] = None
@@ -365,8 +455,8 @@ def solve_subset_with_core(
 
 
 def is_sat(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     verbose: int = -1
 ) -> bool:
@@ -384,8 +474,8 @@ def is_sat(
 
 
 def is_unsat(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     verbose: int = -1
 ) -> bool:

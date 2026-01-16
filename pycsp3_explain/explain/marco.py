@@ -16,6 +16,8 @@ from pycsp3_explain.explain.utils import (
     flatten_constraints,
     make_assump_model,
     get_constraint_variables,
+    Constraint,
+    ConstraintList,
 )
 from pycsp3_explain.solvers.wrapper import (
     SolveResult,
@@ -25,15 +27,19 @@ from pycsp3_explain.solvers.wrapper import (
     solve_subset_with_core,
 )
 
+# Default maximum iterations for MARCO enumeration to prevent infinite loops
+DEFAULT_MAX_MARCO_ITERATIONS = 1000
+
 
 def marco(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     return_mus: bool = True,
     return_mcs: bool = True,
-    verbose: int = -1
-) -> Iterator[Tuple[Literal["MUS", "MCS"], List[Any]]]:
+    verbose: int = -1,
+    max_iterations: int = DEFAULT_MAX_MARCO_ITERATIONS,
+) -> Iterator[Tuple[Literal["MUS", "MCS"], ConstraintList]]:
     """
     Enumerate all MUSes and MCSes using the MARCO algorithm.
 
@@ -58,6 +64,7 @@ def marco(
     :param return_mus: Whether to yield MUSes (default True)
     :param return_mcs: Whether to yield MCSes (default True)
     :param verbose: Verbosity level (-1 for silent)
+    :param max_iterations: Maximum iterations before stopping (safety limit)
     :yields: Tuples of ("MUS", subset) or ("MCS", subset)
 
     Example:
@@ -68,17 +75,18 @@ def marco(
         ...         print(f"Found MCS with {len(subset)} constraints")
     """
     # Delegate to naive implementation for now
-    yield from marco_naive(soft, hard, solver, return_mus, return_mcs, verbose)
+    yield from marco_naive(soft, hard, solver, return_mus, return_mcs, verbose, max_iterations)
 
 
 def marco_naive(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     return_mus: bool = True,
     return_mcs: bool = True,
-    verbose: int = -1
-) -> Iterator[Tuple[Literal["MUS", "MCS"], List[Any]]]:
+    verbose: int = -1,
+    max_iterations: int = DEFAULT_MAX_MARCO_ITERATIONS,
+) -> Iterator[Tuple[Literal["MUS", "MCS"], ConstraintList]]:
     """
     Naive MARCO implementation without assumption variables.
 
@@ -91,6 +99,7 @@ def marco_naive(
     :param return_mus: Whether to yield MUSes
     :param return_mcs: Whether to yield MCSes
     :param verbose: Verbosity level
+    :param max_iterations: Maximum iterations before stopping (safety limit)
     :yields: Tuples of ("MUS", subset) or ("MCS", subset)
     """
     soft = flatten_constraints(soft)
@@ -218,8 +227,7 @@ def marco_naive(
 
     # Main MARCO loop
     iteration = 0
-    max_iterations = 1000  # Safety limit
-    
+
     while iteration < max_iterations:
         iteration += 1
         
@@ -251,12 +259,12 @@ def marco_naive(
 
 
 def all_mus(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     max_mus: Optional[int] = None,
     verbose: int = -1
-) -> List[List[Any]]:
+) -> List[ConstraintList]:
     """
     Find all MUSes using the MARCO algorithm.
 
@@ -269,7 +277,7 @@ def all_mus(
     :param verbose: Verbosity level
     :return: List of all found MUSes
     """
-    muses = []
+    muses: List[ConstraintList] = []
     for result_type, subset in marco(soft, hard, solver, return_mus=True, return_mcs=False, verbose=verbose):
         if result_type == "MUS":
             muses.append(subset)
@@ -279,12 +287,12 @@ def all_mus(
 
 
 def all_mcs(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     solver: str = "ace",
     max_mcs: Optional[int] = None,
     verbose: int = -1
-) -> List[List[Any]]:
+) -> List[ConstraintList]:
     """
     Find all MCSes using the MARCO algorithm.
 
@@ -297,7 +305,7 @@ def all_mcs(
     :param verbose: Verbosity level
     :return: List of all found MCSes
     """
-    mcses = []
+    mcses: List[ConstraintList] = []
     for result_type, subset in marco(soft, hard, solver, return_mus=False, return_mcs=True, verbose=verbose):
         if result_type == "MCS":
             mcses.append(subset)

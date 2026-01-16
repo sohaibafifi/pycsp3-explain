@@ -7,12 +7,17 @@ This module provides helper functions for:
 - Tracking constraint-to-index mappings
 """
 
-from typing import List, Any, Optional, Tuple, Dict
+from typing import List, Any, Optional, Tuple, Dict, Union, Callable, Sequence
 import threading
-import uuid
+
+# Type aliases for better documentation
+# PyCSP3 constraints don't have a single base type, so we use Any but document it
+Constraint = Any  # PyCSP3 constraint object (ECtr, ConstraintIntension, etc.)
+ConstraintList = List[Constraint]
+Variable = Any  # PyCSP3 Variable object
 
 
-# Thread-safe assumption naming using UUID
+# Thread-safe assumption naming
 _assump_lock = threading.Lock()
 _ASSUMP_COUNTER = 0
 
@@ -25,7 +30,9 @@ def _next_assump_name(prefix: str) -> str:
         return f"{prefix}_{_ASSUMP_COUNTER}"
 
 
-def normalize_constraint_list(constraints: Optional[Any]) -> List[Any]:
+def normalize_constraint_list(
+    constraints: Optional[Union[Constraint, Sequence[Constraint]]]
+) -> ConstraintList:
     """
     Normalize constraints to a flat list, filtering out None values.
 
@@ -39,29 +46,31 @@ def normalize_constraint_list(constraints: Optional[Any]) -> List[Any]:
     return [constraints]
 
 
-def _normalize_constraint(constraint: Any) -> Any:
+def _normalize_constraint(constraint: Constraint) -> Constraint:
+    """Normalize a single constraint to its canonical form."""
     try:
         from pycsp3.classes.auxiliary.enums import TypeCtrArg
         from pycsp3.classes.entities import ECtr
-        from pycsp3.classes.main.constraints import Constraint, ConstraintIntension
-    except Exception:
+        from pycsp3.classes.main.constraints import Constraint as PyCspConstraint
+        from pycsp3.classes.main.constraints import ConstraintIntension
+    except ImportError:
         return constraint
 
     if isinstance(constraint, ConstraintIntension):
         return constraint.arguments[TypeCtrArg.FUNCTION].content
-    if isinstance(constraint, Constraint):
+    if isinstance(constraint, PyCspConstraint):
         return ECtr(constraint)
     return constraint
 
 
-def flatten_constraints(constraints: List[Any]) -> List[Any]:
+def flatten_constraints(constraints: ConstraintList) -> ConstraintList:
     """
     Flatten a nested list of constraints into a single list.
 
     :param constraints: List of constraints (possibly nested)
     :return: Flat list of constraints
     """
-    result = []
+    result: ConstraintList = []
     for c in constraints:
         if isinstance(c, list):
             result.extend(flatten_constraints(c))
@@ -70,20 +79,19 @@ def flatten_constraints(constraints: List[Any]) -> List[Any]:
     return result
 
 
-def get_constraint_variables(constraint) -> List:
+def get_constraint_variables(constraint: Constraint) -> List[Variable]:
     """
     Extract variables involved in a constraint.
 
     :param constraint: A PyCSP3 constraint
     :return: List of variables in the constraint
     """
-    from pycsp3.classes.main.variables import Variable
-    from pycsp3.tools.utilities import flatten
+    from pycsp3.classes.main.variables import Variable as PyCspVariable
 
-    variables = []
+    variables: List[Variable] = []
 
-    def extract_vars(obj):
-        if isinstance(obj, Variable):
+    def extract_vars(obj: Any) -> None:
+        if isinstance(obj, PyCspVariable):
             variables.append(obj)
         elif hasattr(obj, 'arguments'):
             # Constraint with arguments
@@ -110,37 +118,41 @@ class ConstraintTracker:
     which is useful for tracking which constraints are in a MUS/MCS.
     """
 
-    def __init__(self, soft: List[Any], hard: Optional[List[Any]] = None):
+    def __init__(
+        self,
+        soft: ConstraintList,
+        hard: Optional[ConstraintList] = None
+    ) -> None:
         """
         Initialize the constraint tracker.
 
         :param soft: List of soft constraints (candidates for MUS/MCS)
         :param hard: List of hard constraints (must always hold)
         """
-        self.soft = flatten_constraints(soft)
-        self.hard = flatten_constraints(hard) if hard else []
+        self.soft: ConstraintList = flatten_constraints(soft)
+        self.hard: ConstraintList = flatten_constraints(hard) if hard else []
 
         # Create index mappings
         self._soft_to_idx: Dict[int, int] = {}
-        self._idx_to_soft: Dict[int, Any] = {}
+        self._idx_to_soft: Dict[int, Constraint] = {}
 
         for i, c in enumerate(self.soft):
             self._soft_to_idx[id(c)] = i
             self._idx_to_soft[i] = c
 
-    def get_index(self, constraint) -> Optional[int]:
+    def get_index(self, constraint: Constraint) -> Optional[int]:
         """Get the index of a soft constraint."""
         return self._soft_to_idx.get(id(constraint))
 
-    def get_constraint(self, index: int) -> Optional[Any]:
+    def get_constraint(self, index: int) -> Optional[Constraint]:
         """Get a soft constraint by its index."""
         return self._idx_to_soft.get(index)
 
-    def get_subset(self, indices: List[int]) -> List[Any]:
+    def get_subset(self, indices: List[int]) -> ConstraintList:
         """Get a subset of soft constraints by their indices."""
         return [self._idx_to_soft[i] for i in indices if i in self._idx_to_soft]
 
-    def get_complement(self, indices: List[int]) -> List[Any]:
+    def get_complement(self, indices: List[int]) -> ConstraintList:
         """Get the complement of a subset (all soft constraints not in indices)."""
         index_set = set(indices)
         return [c for i, c in self._idx_to_soft.items() if i not in index_set]
@@ -157,10 +169,10 @@ class ConstraintTracker:
 
 
 def make_assump_model(
-    soft: List[Any],
-    hard: Optional[List[Any]] = None,
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
     name_prefix: str = "assump"
-) -> Tuple[List[Any], List[Any], List[Any], List[Any]]:
+) -> Tuple[ConstraintList, ConstraintList, List[Variable], ConstraintList]:
     """
     Build assumption indicators and implication constraints for soft constraints.
 
@@ -180,7 +192,10 @@ def make_assump_model(
     return soft, hard, list(assumptions), guard_constraints
 
 
-def order_by_num_variables(constraints: List[Any], descending: bool = True) -> List[Any]:
+def order_by_num_variables(
+    constraints: ConstraintList,
+    descending: bool = True
+) -> ConstraintList:
     """
     Order constraints by the number of variables they contain.
 
@@ -188,7 +203,7 @@ def order_by_num_variables(constraints: List[Any], descending: bool = True) -> L
     :param descending: If True, constraints with more variables come first
     :return: Ordered list of constraints
     """
-    def count_vars(c):
+    def count_vars(c: Constraint) -> int:
         try:
             return len(get_constraint_variables(c))
         except (AttributeError, TypeError, ValueError):
@@ -197,12 +212,16 @@ def order_by_num_variables(constraints: List[Any], descending: bool = True) -> L
     return sorted(constraints, key=count_vars, reverse=descending)
 
 
+# Type alias for algorithm functions
+AlgorithmFunc = Callable[..., Any]
+
+
 def explain_unsat(
-    algorithm: Any = "mus",
-    soft: Optional[List[Any]] = None,
-    hard: Optional[List[Any]] = None,
+    algorithm: Union[str, AlgorithmFunc] = "mus",
+    soft: Optional[ConstraintList] = None,
+    hard: Optional[ConstraintList] = None,
     check: bool = True,
-    **kwargs
+    **kwargs: Any
 ) -> Any:
     """
     Run an explanation algorithm on an UNSAT model.
