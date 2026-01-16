@@ -16,13 +16,13 @@ A MUS is a minimal subset of constraints that is unsatisfiable:
 """
 
 from typing import List, Any, Optional, Union, Callable, Set
-from contextlib import contextmanager
 
 from pycsp3_explain.explain.utils import (
     flatten_constraints,
     order_by_num_variables,
     make_assump_model,
     get_constraint_variables,
+    normalize_constraint_list,
 )
 from pycsp3_explain.solvers.wrapper import (
     SolveResult,
@@ -30,136 +30,13 @@ from pycsp3_explain.solvers.wrapper import (
     is_unsat,
     solve_subset,
     solve_subset_with_core,
+    clean_pycsp3_state,
 )
 
 
 class OCUSException(Exception):
     """Exception raised when OCUS cannot find a valid solution."""
     pass
-
-
-def _normalize_constraint_list(constraints: Optional[Any]) -> List[Any]:
-    if constraints is None:
-        return []
-    if isinstance(constraints, (list, tuple, set, frozenset)):
-        return [c for c in constraints if c is not None]
-    return [constraints]
-
-
-@contextmanager
-def _clean_pycsp3_state():
-    from pycsp3_explain.solvers.wrapper import disable_pycsp3_atexit
-    from pycsp3.classes.entities import (
-        CtrEntities,
-        VarEntities,
-        ObjEntities,
-        AnnEntities,
-    )
-    from pycsp3.classes.main.variables import Variable
-    from pycsp3.classes.main.constraints import auxiliary
-    from pycsp3.compiler import Compilation
-
-    disable_pycsp3_atexit()
-
-    saved_ctr_items = CtrEntities.items[:]
-    saved_obj_items = ObjEntities.items[:]
-    saved_ann_items = AnnEntities.items[:]
-    saved_ann_types = AnnEntities.items_types[:] if hasattr(AnnEntities, "items_types") else []
-    saved_var_items = VarEntities.items[:]
-    saved_var_to_evar = VarEntities.varToEVar.copy()
-    saved_var_to_evar_array = VarEntities.varToEVarArray.copy()
-    saved_prefix_to_evar_array = VarEntities.prefixToEVarArray.copy()
-    saved_name2obj = Variable.name2obj.copy()
-    saved_arrays = Variable.arrays[:] if hasattr(Variable, "arrays") else []
-
-    saved_compilation = {
-        "done": Compilation.done,
-        "model": Compilation.model,
-        "string_model": Compilation.string_model,
-        "string_data": Compilation.string_data,
-        "data": Compilation.data,
-        "solve": Compilation.solve,
-        "stopwatch": Compilation.stopwatch,
-        "stopwatch2": Compilation.stopwatch2,
-        "pathname": Compilation.pathname,
-        "filename": Compilation.filename,
-    }
-
-    aux = auxiliary()
-    saved_aux_intro = aux._introduced_variables
-    saved_aux_collected = aux._collected_constraints
-    saved_aux_raw = aux._collected_raw_constraints
-    saved_aux_ext = aux._collected_extension_constraints
-    saved_aux_cache = aux.cache
-    saved_aux_cache_ints = aux.cache_ints.copy()
-    saved_aux_cache_nodes = aux.cache_nodes.copy()
-
-    try:
-        CtrEntities.items = []
-        ObjEntities.items = []
-        AnnEntities.items = []
-        if hasattr(AnnEntities, "items_types"):
-            AnnEntities.items_types = []
-        VarEntities.items = []
-        VarEntities.varToEVar = {}
-        VarEntities.varToEVarArray = {}
-        VarEntities.prefixToEVarArray = {}
-        Variable.name2obj = {}
-        if hasattr(Variable, "arrays"):
-            Variable.arrays = []
-
-        aux._introduced_variables = []
-        aux._collected_constraints = []
-        aux._collected_raw_constraints = []
-        aux._collected_extension_constraints = []
-        aux.cache = []
-        aux.cache_ints = {}
-        aux.cache_nodes = {}
-
-        Compilation.done = False
-        Compilation.model = None
-        Compilation.string_model = None
-        Compilation.string_data = None
-        Compilation.data = None
-        Compilation.solve = None
-        Compilation.stopwatch = None
-        Compilation.stopwatch2 = None
-        Compilation.pathname = ""
-        Compilation.filename = ""
-
-        yield
-    finally:
-        CtrEntities.items = saved_ctr_items
-        ObjEntities.items = saved_obj_items
-        AnnEntities.items = saved_ann_items
-        if hasattr(AnnEntities, "items_types"):
-            AnnEntities.items_types = saved_ann_types
-        VarEntities.items = saved_var_items
-        VarEntities.varToEVar = saved_var_to_evar
-        VarEntities.varToEVarArray = saved_var_to_evar_array
-        VarEntities.prefixToEVarArray = saved_prefix_to_evar_array
-        Variable.name2obj = saved_name2obj
-        if hasattr(Variable, "arrays"):
-            Variable.arrays = saved_arrays
-
-        aux._introduced_variables = saved_aux_intro
-        aux._collected_constraints = saved_aux_collected
-        aux._collected_raw_constraints = saved_aux_raw
-        aux._collected_extension_constraints = saved_aux_ext
-        aux.cache = saved_aux_cache
-        aux.cache_ints = saved_aux_cache_ints
-        aux.cache_nodes = saved_aux_cache_nodes
-
-        Compilation.done = saved_compilation["done"]
-        Compilation.model = saved_compilation["model"]
-        Compilation.string_model = saved_compilation["string_model"]
-        Compilation.string_data = saved_compilation["string_data"]
-        Compilation.data = saved_compilation["data"]
-        Compilation.solve = saved_compilation["solve"]
-        Compilation.stopwatch = saved_compilation["stopwatch"]
-        Compilation.stopwatch2 = saved_compilation["stopwatch2"]
-        Compilation.pathname = saved_compilation["pathname"]
-        Compilation.filename = saved_compilation["filename"]
 
 
 def _solve_selection_model(
@@ -189,7 +66,7 @@ def _solve_selection_model(
     if fixed is not None and any(i < 0 or i >= n for i in fixed):
         raise ValueError("fixed_selection contains indices out of range")
 
-    with _clean_pycsp3_state():
+    with clean_pycsp3_state():
         var_id = f"hs_{uuid.uuid4().hex}"
         if fixed is None:
             select = VarArray(size=n, dom=range(2), id=var_id)
@@ -199,7 +76,7 @@ def _solve_selection_model(
 
             select = VarArray(size=n, dom=dom, id=var_id)
 
-        constraints = _normalize_constraint_list(constraints_builder(select))
+        constraints = normalize_constraint_list(constraints_builder(select))
         if constraints:
             satisfy(constraints)
         else:
@@ -248,7 +125,7 @@ def _make_subset_checker(
             return True
 
         def constraints_builder(select):
-            return _normalize_constraint_list(subset_constraints(select))
+            return normalize_constraint_list(subset_constraints(select))
 
         return bool(
             _solve_selection_model(
@@ -302,7 +179,7 @@ def _find_optimal_hitting_set(
         if correction_sets:
             constraints.extend(Sum(select[i] for i in cs) >= 1 for cs in correction_sets)
         if subset_constraints is not None:
-            constraints.extend(_normalize_constraint_list(subset_constraints(select)))
+            constraints.extend(normalize_constraint_list(subset_constraints(select)))
         return constraints
 
     def objective_builder(select):

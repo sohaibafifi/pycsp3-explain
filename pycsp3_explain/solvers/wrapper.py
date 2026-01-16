@@ -10,10 +10,11 @@ import tempfile
 import traceback
 import atexit
 import re
-from typing import List, Any, Optional, Tuple
+from typing import List, Any, Optional, Tuple, Generator
 from enum import Enum
+from contextlib import contextmanager
 
-from pycsp3_explain.explain.utils import flatten_constraints
+from pycsp3_explain.explain.utils import flatten_constraints, normalize_constraint_list
 
 
 class SolveResult(Enum):
@@ -42,9 +43,8 @@ def _parse_core_indices(core_line: Optional[str]) -> List[int]:
 
 
 def _normalize_constraints(constraints: Optional[List[Any]]) -> List[Any]:
-    if constraints is None:
-        return []
-    items = list(constraints) if isinstance(constraints, (list, tuple)) else [constraints]
+    """Normalize and flatten constraints."""
+    items = normalize_constraint_list(constraints)
     return flatten_constraints(items)
 
 
@@ -61,6 +61,141 @@ def disable_pycsp3_atexit():
         atexit.unregister(pycsp3_end)
     except (ImportError, AttributeError):
         pass
+
+
+@contextmanager
+def clean_pycsp3_state() -> Generator[None, None, None]:
+    """
+    Context manager that saves and restores PyCSP3 global state.
+
+    This is essential for MUS/MSS algorithms that need to solve multiple
+    subproblems without polluting the global state.
+
+    Usage:
+        with clean_pycsp3_state():
+            # Create new variables/constraints
+            # Solve subproblem
+        # Original state is restored
+    """
+    disable_pycsp3_atexit()
+
+    from pycsp3.classes.entities import (
+        CtrEntities,
+        VarEntities,
+        ObjEntities,
+        AnnEntities,
+    )
+    from pycsp3.classes.main.variables import Variable
+    from pycsp3.classes.main.constraints import auxiliary
+    from pycsp3.compiler import Compilation
+
+    # Save constraint/objective/annotation state
+    saved_ctr_items = CtrEntities.items[:]
+    saved_obj_items = ObjEntities.items[:]
+    saved_ann_items = AnnEntities.items[:]
+    saved_ann_types = AnnEntities.items_types[:] if hasattr(AnnEntities, "items_types") else []
+
+    # Save variable state
+    saved_var_items = VarEntities.items[:]
+    saved_var_to_evar = VarEntities.varToEVar.copy()
+    saved_var_to_evar_array = VarEntities.varToEVarArray.copy()
+    saved_prefix_to_evar_array = VarEntities.prefixToEVarArray.copy()
+    saved_name2obj = Variable.name2obj.copy()
+    saved_arrays = Variable.arrays[:] if hasattr(Variable, "arrays") else []
+
+    # Save compilation state
+    saved_compilation = {
+        "done": Compilation.done,
+        "model": Compilation.model,
+        "string_model": Compilation.string_model,
+        "string_data": Compilation.string_data,
+        "data": Compilation.data,
+        "solve": Compilation.solve,
+        "stopwatch": Compilation.stopwatch,
+        "stopwatch2": Compilation.stopwatch2,
+        "pathname": Compilation.pathname,
+        "filename": Compilation.filename,
+    }
+
+    # Save auxiliary constraint state
+    aux = auxiliary()
+    saved_aux_intro = aux._introduced_variables
+    saved_aux_collected = aux._collected_constraints
+    saved_aux_raw = aux._collected_raw_constraints
+    saved_aux_ext = aux._collected_extension_constraints
+    saved_aux_cache = aux.cache
+    saved_aux_cache_ints = aux.cache_ints.copy()
+    saved_aux_cache_nodes = aux.cache_nodes.copy()
+
+    try:
+        # Clear all state for fresh subproblem
+        CtrEntities.items = []
+        ObjEntities.items = []
+        AnnEntities.items = []
+        if hasattr(AnnEntities, "items_types"):
+            AnnEntities.items_types = []
+        VarEntities.items = []
+        VarEntities.varToEVar = {}
+        VarEntities.varToEVarArray = {}
+        VarEntities.prefixToEVarArray = {}
+        Variable.name2obj = {}
+        if hasattr(Variable, "arrays"):
+            Variable.arrays = []
+
+        aux._introduced_variables = []
+        aux._collected_constraints = []
+        aux._collected_raw_constraints = []
+        aux._collected_extension_constraints = []
+        aux.cache = []
+        aux.cache_ints = {}
+        aux.cache_nodes = {}
+
+        Compilation.done = False
+        Compilation.model = None
+        Compilation.string_model = None
+        Compilation.string_data = None
+        Compilation.data = None
+        Compilation.solve = None
+        Compilation.stopwatch = None
+        Compilation.stopwatch2 = None
+        Compilation.pathname = ""
+        Compilation.filename = ""
+
+        yield
+
+    finally:
+        # Restore all state
+        CtrEntities.items = saved_ctr_items
+        ObjEntities.items = saved_obj_items
+        AnnEntities.items = saved_ann_items
+        if hasattr(AnnEntities, "items_types"):
+            AnnEntities.items_types = saved_ann_types
+        VarEntities.items = saved_var_items
+        VarEntities.varToEVar = saved_var_to_evar
+        VarEntities.varToEVarArray = saved_var_to_evar_array
+        VarEntities.prefixToEVarArray = saved_prefix_to_evar_array
+        Variable.name2obj = saved_name2obj
+        if hasattr(Variable, "arrays"):
+            Variable.arrays = saved_arrays
+
+        aux._introduced_variables = saved_aux_intro
+        aux._collected_constraints = saved_aux_collected
+        aux._collected_raw_constraints = saved_aux_raw
+        aux._collected_extension_constraints = saved_aux_ext
+        aux.cache = saved_aux_cache
+        aux.cache_ints = saved_aux_cache_ints
+        aux.cache_nodes = saved_aux_cache_nodes
+
+        Compilation.done = saved_compilation["done"]
+        Compilation.model = saved_compilation["model"]
+        Compilation.string_model = saved_compilation["string_model"]
+        Compilation.string_data = saved_compilation["string_data"]
+        Compilation.data = saved_compilation["data"]
+        Compilation.solve = saved_compilation["solve"]
+        Compilation.stopwatch = saved_compilation["stopwatch"]
+        Compilation.stopwatch2 = saved_compilation["stopwatch2"]
+        Compilation.pathname = saved_compilation["pathname"]
+        Compilation.filename = saved_compilation["filename"]
 
 
 def _solve_subset_internal(
@@ -146,7 +281,7 @@ def _solve_subset_internal(
         try:
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
-        except:
+        except OSError:
             pass
 
         if status == SAT or status == OPTIMUM:

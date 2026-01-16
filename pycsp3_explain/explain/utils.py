@@ -8,16 +8,35 @@ This module provides helper functions for:
 """
 
 from typing import List, Any, Optional, Tuple, Dict
-import sys
-import os
+import threading
+import uuid
 
+
+# Thread-safe assumption naming using UUID
+_assump_lock = threading.Lock()
 _ASSUMP_COUNTER = 0
 
 
 def _next_assump_name(prefix: str) -> str:
+    """Generate a unique assumption variable name (thread-safe)."""
     global _ASSUMP_COUNTER
-    _ASSUMP_COUNTER += 1
-    return f"{prefix}_{_ASSUMP_COUNTER}"
+    with _assump_lock:
+        _ASSUMP_COUNTER += 1
+        return f"{prefix}_{_ASSUMP_COUNTER}"
+
+
+def normalize_constraint_list(constraints: Optional[Any]) -> List[Any]:
+    """
+    Normalize constraints to a flat list, filtering out None values.
+
+    :param constraints: A constraint, list of constraints, or None
+    :return: A flat list of non-None constraints
+    """
+    if constraints is None:
+        return []
+    if isinstance(constraints, (list, tuple, set, frozenset)):
+        return [c for c in constraints if c is not None]
+    return [constraints]
 
 
 def _normalize_constraint(constraint: Any) -> Any:
@@ -172,7 +191,7 @@ def order_by_num_variables(constraints: List[Any], descending: bool = True) -> L
     def count_vars(c):
         try:
             return len(get_constraint_variables(c))
-        except:
+        except (AttributeError, TypeError, ValueError):
             return 0
 
     return sorted(constraints, key=count_vars, reverse=descending)

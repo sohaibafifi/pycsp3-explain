@@ -12,6 +12,7 @@ from pycsp3_explain.solvers.wrapper import (
     is_sat,
     is_unsat,
     disable_pycsp3_atexit,
+    clean_pycsp3_state,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "is_sat",
     "is_unsat",
     "disable_pycsp3_atexit",
+    "clean_pycsp3_state",
 ]
