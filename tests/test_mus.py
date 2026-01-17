@@ -8,7 +8,7 @@ import os
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain, is_mus
+from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain, quickxplain_incremental, is_mus
 from pycsp3_explain.solvers.wrapper import is_sat, is_unsat
 
 
@@ -241,6 +241,70 @@ class TestQuickXplainBehavior:
 
         assert len(result) == 1
         assert constraint_in_list(c0, result)
+
+
+class TestQuickXplainIncremental:
+    """Tests for incremental QuickXplain algorithm."""
+
+    def setup_method(self):
+        """Clear PyCSP3 state before each test."""
+        clear()
+
+    def test_quickxplain_incremental_simple(self):
+        """Test incremental QuickXplain on a simple conflict."""
+        clear()
+
+        x = VarArray(size=2, dom=range(10))
+
+        c0 = x[0] == 5
+        c1 = x[0] == 7  # Conflicts with c0
+
+        soft = [c0, c1]
+        result = quickxplain_incremental(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_quickxplain_incremental_preference(self):
+        """Test that incremental QuickXplain respects constraint ordering."""
+        clear()
+
+        x = Var(dom=range(10))
+
+        c0 = x == 1  # Preferred
+        c1 = x == 2
+        c2 = x == 3
+
+        soft = [c0, c1, c2]
+        result = quickxplain_incremental(soft, solver="ace", verbose=-1)
+
+        # Should get a MUS of size 2
+        assert len(result) == 2
+        # Should prefer c0 (first constraint)
+        assert constraint_in_list(c0, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_quickxplain_incremental_three_constraints(self):
+        """Test incremental QuickXplain with a 3-constraint MUS."""
+        clear()
+
+        x = VarArray(size=3, dom=range(10))
+
+        c0 = x[0] == 5
+        c1 = x[1] >= 3  # Independent
+        c2 = x[0] == 7  # Conflicts with c0
+
+        soft = [c0, c1, c2]
+        result = quickxplain_incremental(soft, solver="ace", verbose=-1)
+
+        # Should contain c0 and c2, not c1
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c2, result)
+        assert not constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
 
 
 class TestMusAssumptionBased:

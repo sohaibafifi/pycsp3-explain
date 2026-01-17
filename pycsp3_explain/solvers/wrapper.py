@@ -408,6 +408,8 @@ def _solve_subset_internal(
     from pycsp3 import ACE, CHOCO
     from pycsp3.classes.entities import CtrEntities, VarEntities, ObjEntities, AnnEntities
     from pycsp3.compiler import Compilation
+    from pycsp3.dashboard import options as pycsp3_options
+    # from pycsp3.compiler import options as pycsp3_options
 
     # Save current constraint state (NOT variables - those are managed by the caller)
     saved_ctr_items = CtrEntities.items[:]
@@ -422,7 +424,10 @@ def _solve_subset_internal(
 
     core_line = None
 
+    prev_compactor = pycsp3_options.dontruncompactor
+
     try:
+        pycsp3_options.dontruncompactor = True
         # Reset compilation state for fresh solve
         Compilation.done = False
         Compilation.model = None
@@ -488,6 +493,7 @@ def _solve_subset_internal(
         return SolveResult.ERROR, core_line
 
     finally:
+        pycsp3_options.dontruncompactor = prev_compactor
         # Restore constraint state only (not variables)
         CtrEntities.items = saved_ctr_items
         ObjEntities.items = saved_obj_items

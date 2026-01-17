@@ -185,6 +185,9 @@ def make_assump_model(
     if not soft:
         raise ValueError("soft constraints cannot be empty")
 
+    from pycsp3.classes.main.constraints import auxiliary
+    auxiliary().cache = []
+
     from pycsp3 import VarArray, imply
 
     assumptions = VarArray(size=len(soft), dom=range(2), id=_next_assump_name(name_prefix))
@@ -248,6 +251,7 @@ def explain_unsat(
             mus,
             mus_naive,
             quickxplain,
+            quickxplain_incremental,
             optimal_mus,
             optimal_mus_naive,
             smus,
@@ -276,6 +280,7 @@ def explain_unsat(
             "mus": mus,
             "mus_naive": mus_naive,
             "quickxplain": quickxplain,
+            "quickxplain_incremental": quickxplain_incremental,
             "optimal_mus": optimal_mus,
             "optimal_mus_naive": optimal_mus_naive,
             "smus": smus,

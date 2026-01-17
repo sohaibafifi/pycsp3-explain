@@ -8,7 +8,7 @@ adding impossible constraints to a classic N-Queens problem.
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus, mus_naive, optimal_mus, quickxplain
+from pycsp3_explain.explain.mus import mus, mus_naive, optimal_mus, quickxplain, smus, quickxplain_incremental
 from pycsp3_explain.explain.marco import marco
 
 
@@ -99,6 +99,8 @@ def main():
     # This forces all queens on the main diagonal, violating c2
 
     print("\nFinding MUS...")
+
+    
     print("\t1 Using mus (assumption-based) to identify conflicting constraints...")
     mus_fast = mus(constraints, solver="ace", verbose=-1)
 
@@ -121,7 +123,15 @@ def main():
     print("\nComparison:")
     print("\t   Same constraints:" if same else "\t   Different MUSes (both minimal)")
 
-    print("\n\t3 using the quickxplain to identify preferred conflicting constraints...")
+    print("\n\t 3 using smus to find smallest MUS...")
+    smallest_mus = smus(constraints, solver="ace", verbose=-1)
+    print(f"\n\t Result: Found {len(smallest_mus)} conflicting constraint(s)")
+    print("   Smallest MUS (minimum number of constraints):")
+    for c in smallest_mus:
+        idx = find_constraint_index(c, constraints)
+        print(f"   - c{idx}: {constraint_names[idx]}")
+
+    print("\n\t4.1 using the quickxplain to identify preferred conflicting constraints...")
     qx_mus = quickxplain(constraints, solver="ace", verbose=-1)
     print(f"\n\t Result: Found {len(qx_mus)} conflicting constraint(s)")
     print("   Preferred Minimal Unsatisfiable Subset:")
@@ -129,7 +139,16 @@ def main():
         idx = find_constraint_index(c, constraints)
         print(f"   - c{idx}: {constraint_names[idx]}")
 
-    print("\n\t4 using optimal_mus to prioritize low-weight conflicts...")
+
+    print("\n\t4.2 using the quickxplain_incremental to identify preferred conflicting constraints...")
+    qx_mus = quickxplain_incremental(constraints, solver="ace", verbose=-1)
+    print(f"\n\t Result: Found {len(qx_mus)} conflicting constraint(s)")
+    print("   Preferred Minimal Unsatisfiable Subset:")
+    for c in qx_mus:
+        idx = find_constraint_index(c, constraints)
+        print(f"   - c{idx}: {constraint_names[idx]}")
+
+    print("\n\t5 using optimal_mus to prioritize low-weight conflicts...")
     optimal = optimal_mus(constraints, weights=weights, solver="ace", verbose=-1)
     total_weight = 0
     print("   Optimal MUS (minimum total weight):")
@@ -140,7 +159,7 @@ def main():
         print(f"   - c{idx}: {constraint_names[idx]} [w={weight}]")
     print(f"   Total weight: {total_weight}")
 
-    print("\n\t5 using MARCO to enumerate all MUSes and MCSes...")
+    print("\n\t6 using MARCO to enumerate all MUSes and MCSes...")
     def format_subset(subset):
         parts = []
         for c in subset:
