@@ -33,6 +33,7 @@ from pycsp3_explain.solvers.wrapper import (
     clean_pycsp3_state,
     _save_pycsp3_state,
     _restore_pycsp3_state,
+    _sigint_kill_solver,
 )
 
 
@@ -650,11 +651,12 @@ def quickxplain_incremental(
 
             try:
                 pycsp3_options.dontruncompactor = True
-                status = solve(
-                    solver=solver_type,
-                    verbose=verbose,
-                    filename=temp_filename
-                )
+                with _sigint_kill_solver():
+                    status = solve(
+                        solver=solver_type,
+                        verbose=verbose,
+                        filename=temp_filename
+                    )
 
                 # Clean up temp file
                 try:

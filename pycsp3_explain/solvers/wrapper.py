@@ -10,6 +10,8 @@ import tempfile
 import traceback
 import atexit
 import re
+import signal
+import subprocess
 from typing import List, Any, Optional, Tuple, Generator, NamedTuple, Dict, FrozenSet
 from enum import Enum
 from contextlib import contextmanager
@@ -197,6 +199,52 @@ def disable_pycsp3_atexit() -> None:
         atexit.unregister(pycsp3_end)
     except (ImportError, AttributeError):
         pass
+
+
+@contextmanager
+def _sigint_kill_solver() -> Generator[None, None, None]:
+    """
+    Keep a SIGINT handler that raises KeyboardInterrupt and kills the solver process.
+    This avoids PyCSP3 swallowing Ctrl-C by overriding the handler internally.
+    """
+    from pycsp3.tools.utilities import is_windows
+
+    orig_signal = signal.signal
+    orig_handler = signal.getsignal(signal.SIGINT)
+    orig_popen = subprocess.Popen
+    proc_holder: Dict[str, Any] = {"proc": None}
+
+    def popen_wrapper(*args, **kwargs):
+        proc = orig_popen(*args, **kwargs)
+        proc_holder["proc"] = proc
+        return proc
+
+    def sigint_handler(signum, frame):
+        proc = proc_holder["proc"]
+        if proc and proc.poll() is None:
+            try:
+                if not is_windows():
+                    os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+                else:
+                    proc.send_signal(signal.SIGINT)
+            except Exception:
+                pass
+        raise KeyboardInterrupt
+
+    def signal_wrapper(sig, handler):
+        if sig == signal.SIGINT:
+            return orig_handler
+        return orig_signal(sig, handler)
+
+    subprocess.Popen = popen_wrapper
+    signal.signal = signal_wrapper
+    orig_signal(signal.SIGINT, sigint_handler)
+    try:
+        yield
+    finally:
+        subprocess.Popen = orig_popen
+        signal.signal = orig_signal
+        orig_signal(signal.SIGINT, orig_handler)
 
 
 @dataclass
@@ -461,13 +509,14 @@ def _solve_subset_internal(
         temp_filename = os.path.join(tempfile.gettempdir(), f"pycsp3_explain_{uuid.uuid4().hex}.xml")
 
         # Solve with explicit filename
-        status = solve(
-            solver=solver_type,
-            verbose=verbose,
-            options=options_str,
-            filename=temp_filename,
-            extraction=extraction,
-        )
+        with _sigint_kill_solver():
+            status = solve(
+                solver=solver_type,
+                verbose=verbose,
+                options=options_str,
+                filename=temp_filename,
+                extraction=extraction,
+            )
 
         if extraction:
             core_line = pycsp3_core()
