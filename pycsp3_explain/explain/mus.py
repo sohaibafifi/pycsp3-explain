@@ -15,6 +15,8 @@ A MUS is a minimal subset of constraints that is unsatisfiable:
 - Removing any constraint from the subset makes it SAT
 """
 
+import warnings
+from itertools import combinations
 from typing import List, Any, Optional, Union, Callable, Set
 
 from pycsp3_explain.explain.utils import (
@@ -203,8 +205,6 @@ def _find_optimal_hitting_set(
         except Exception as exc:
             if verbose >= 0:
                 print(f"hitting set CP solve failed ({exc}); using enumeration")
-
-    from itertools import combinations
 
     indexed_weights = [(i, weights[i]) for i in range(n)]
     indexed_weights.sort(key=lambda x: x[1])
@@ -928,25 +928,24 @@ def optimal_mus_naive(
     """
     Find an optimal MUS according to a linear objective function.
 
-    This naive implementation uses an iterative hitting set approach:
-    1. Generate correction subsets by growing satisfiable subsets
-    2. Find optimal hitting sets that hit all correction subsets
-    3. Test if hitting set is UNSAT; if so, return it as optimal MUS
+    Naive exhaustive implementation: enumerate all subsets, keep UNSAT and
+    minimal ones, and return the MUS with minimum total weight.
 
     :param soft: List of soft constraints
     :param hard: List of hard constraints
-    :param weights: Weight for each soft constraint (default: all 1s = smallest MUS)
+    :param weights: Weight for each soft constraint (default: all 1s = SMUS)
     :param solver: Solver name
     :param verbose: Verbosity level
     :return: An optimal MUS according to weights
     :raises OCUSException: If no MUS exists
     :raises AssertionError: If model is SAT
-
-    Reference:
-        Gamba, Emilio, Bart Bogaerts, and Tias Guns. "Efficiently explaining
-        CSPs with unsatisfiable subset optimization."
-        Journal of Artificial Intelligence Research 78 (2023): 709-746.
     """
+    warnings.warn(
+        "optimal_mus_naive() is deprecated and kept for research purposes. use optimal_mus() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     soft = flatten_constraints(soft)
     hard = flatten_constraints(hard) if hard else []
 
@@ -962,81 +961,46 @@ def optimal_mus_naive(
 
     # Verify model is UNSAT
     assert is_unsat(soft, hard, solver, verbose), \
-        "optimal_mus: model must be UNSAT"
+        "optimal_mus_naive: model must be UNSAT"
 
-    # Collect correction subsets (complements of maximal satisfiable subsets)
-    correction_subsets: List[set] = []
+    best_combo: Optional[tuple[int, ...]] = None
+    best_weight: Optional[Union[int, float]] = None
 
-    def find_optimal_hitting_set(correction_sets: List[set]) -> Optional[set]:
-        """Find the minimum weight hitting set that hits all correction sets."""
-        return _find_optimal_hitting_set(
-            n=n,
-            correction_sets=correction_sets,
-            weights=w,
-            solver=solver,
-            verbose=verbose,
-        )
+    for size in range(1, n + 1):
+        for combo in combinations(range(n), size):
+            combo_subset = [soft[i] for i in combo]
+            if solve_subset(combo_subset, hard, solver, verbose) != SolveResult.UNSAT:
+                continue
 
-    # Main OCUS loop
-    while True:
-        # Find optimal hitting set
-        hitting_set = find_optimal_hitting_set(correction_subsets)
-
-        if hitting_set is None:
-            raise OCUSException("No unsatisfiable subset could be found")
-
-        hitting_set_list = sorted(hitting_set)
-        subset = [soft[i] for i in hitting_set_list]
-
-        if verbose >= 0:
-            print(f"optimal_mus: testing hitting set of size {len(hitting_set)}, "
-                  f"weight {sum(w[i] for i in hitting_set)}")
-
-        # Test if hitting set is UNSAT
-        result = solve_subset(subset, hard, solver, verbose)
-
-        if result == SolveResult.UNSAT:
-            # Found an optimal MUS candidate - verify and shrink if needed
-            # The hitting set might not be minimal, so shrink it
-            mus_indices = set(hitting_set)
-
-            # Order by weight (higher weight first for removal)
-            ordered = sorted(mus_indices, key=lambda i: -w[i])
-
-            for idx in ordered:
-                if idx not in mus_indices:
+            is_minimal_subset = True
+            for pos in range(len(combo)):
+                reduced_combo = combo[:pos] + combo[pos + 1:]
+                if not reduced_combo:
                     continue
-                mus_indices.remove(idx)
-                test_subset = [soft[i] for i in sorted(mus_indices)]
-                if not test_subset or is_sat(test_subset, hard, solver, verbose):
-                    mus_indices.add(idx)
+                reduced_subset = [soft[i] for i in reduced_combo]
+                if solve_subset(reduced_subset, hard, solver, verbose) == SolveResult.UNSAT:
+                    is_minimal_subset = False
+                    break
+            if not is_minimal_subset:
+                continue
 
-            return [soft[i] for i in range(n) if i in mus_indices]
+            combo_weight = sum(w[i] for i in combo)
+            if (
+                best_weight is None
+                or combo_weight < best_weight
+                or (combo_weight == best_weight and (best_combo is None or combo < best_combo))
+            ):
+                best_weight = combo_weight
+                best_combo = combo
+                if verbose >= 0:
+                    print(
+                        f"optimal_mus_naive: candidate MUS size={len(combo)} weight={combo_weight}"
+                    )
 
-        elif result == SolveResult.SAT:
-            # SAT: grow to MSS, derive correction subset
-            mss_indices = set(hitting_set_list)
+    if best_combo is None:
+        raise OCUSException("No unsatisfiable subset could be found")
 
-            for i in range(n):
-                if i in mss_indices:
-                    continue
-                test_indices = sorted(mss_indices | {i})
-                test_subset = [soft[j] for j in test_indices]
-                if is_sat(test_subset, hard, solver, verbose):
-                    mss_indices.add(i)
-
-            # Correction subset = complement of MSS
-            correction_subset = set(range(n)) - mss_indices
-            if not correction_subset:
-                raise OCUSException("Model is SAT, no MUS exists")
-
-            correction_subsets.append(correction_subset)
-
-            if verbose >= 0:
-                print(f"optimal_mus: found correction subset of size {len(correction_subset)}")
-
-        else:
-            raise OCUSException(f"Solver returned {result}")
+    return [soft[i] for i in best_combo]
 
 
 def smus(
@@ -1056,7 +1020,7 @@ def smus(
     :param verbose: Verbosity level
     :return: The smallest MUS
     """
-    return optimal_mus_naive(soft, hard, weights=None, solver=solver, verbose=verbose)
+    return optimal_mus(soft, hard, weights=None, solver=solver, verbose=verbose)
 
 
 def optimal_mus(
@@ -1067,18 +1031,103 @@ def optimal_mus(
     verbose: int = -1
 ) -> List[Any]:
     """
-    Find an optimal MUS according to weights.
+    Find an optimal MUS according to a linear objective function.
 
-    Alias for optimal_mus_naive. For weighted MUS optimization.
+    Canonical implementation using an iterative hitting set loop:
+    1. Generate correction subsets from satisfiable grows
+    2. Solve a weighted hitting-set problem
+    3. Validate/shrink UNSAT hitting sets to MUS
 
     :param soft: List of soft constraints
     :param hard: List of hard constraints
-    :param weights: Weight for each soft constraint
+    :param weights: Weight for each soft constraint (default: all 1s = SMUS)
     :param solver: Solver name
     :param verbose: Verbosity level
     :return: An optimal MUS according to weights
+    :raises OCUSException: If no MUS exists
+    :raises AssertionError: If model is SAT
+
+    Reference:
+        Gamba, Emilio, Bart Bogaerts, and Tias Guns. "Efficiently explaining
+        CSPs with unsatisfiable subset optimization."
+        Journal of Artificial Intelligence Research 78 (2023): 709-746.
     """
-    return optimal_mus_naive(soft, hard, weights, solver, verbose)
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        raise ValueError("soft constraints cannot be empty")
+
+    n = len(soft)
+
+    w: List[Union[int, float]] = weights if weights is not None else [1] * n
+    if len(w) != n:
+        raise ValueError(f"weights length ({len(w)}) must match soft length ({n})")
+
+    assert is_unsat(soft, hard, solver, verbose), \
+        "optimal_mus: model must be UNSAT"
+
+    correction_subsets: List[set] = []
+
+    while True:
+        hitting_set = _find_optimal_hitting_set(
+            n=n,
+            correction_sets=correction_subsets,
+            weights=w,
+            solver=solver,
+            verbose=verbose,
+        )
+
+        if hitting_set is None:
+            raise OCUSException("No unsatisfiable subset could be found")
+
+        hitting_set_list = sorted(hitting_set)
+        subset = [soft[i] for i in hitting_set_list]
+
+        if verbose >= 0:
+            print(
+                f"optimal_mus: testing hitting set of size {len(hitting_set)}, "
+                f"weight {sum(w[i] for i in hitting_set)}"
+            )
+
+        result = solve_subset(subset, hard, solver, verbose)
+
+        if result == SolveResult.UNSAT:
+            mus_indices = set(hitting_set)
+            ordered = sorted(mus_indices, key=lambda i: -w[i])
+
+            for idx in ordered:
+                if idx not in mus_indices:
+                    continue
+                mus_indices.remove(idx)
+                test_subset = [soft[i] for i in sorted(mus_indices)]
+                if not test_subset or is_sat(test_subset, hard, solver, verbose):
+                    mus_indices.add(idx)
+
+            return [soft[i] for i in range(n) if i in mus_indices]
+
+        if result == SolveResult.SAT:
+            mss_indices = set(hitting_set_list)
+
+            for i in range(n):
+                if i in mss_indices:
+                    continue
+                test_indices = sorted(mss_indices | {i})
+                test_subset = [soft[j] for j in test_indices]
+                if is_sat(test_subset, hard, solver, verbose):
+                    mss_indices.add(i)
+
+            correction_subset = set(range(n)) - mss_indices
+            if not correction_subset:
+                raise OCUSException("Model is SAT, no MUS exists")
+
+            correction_subsets.append(correction_subset)
+
+            if verbose >= 0:
+                print(f"optimal_mus: found correction subset of size {len(correction_subset)}")
+            continue
+
+        raise OCUSException(f"Solver returned {result}")
 
 
 def ocus(

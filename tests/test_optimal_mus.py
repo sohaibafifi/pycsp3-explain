@@ -161,6 +161,47 @@ class TestOptimalMus:
         assert len(smus_result) == len(optimal_result)
 
 
+class TestOptimalMusNaive:
+    """Tests for deprecated naive weighted MUS implementation."""
+
+    def setup_method(self):
+        """Clear PyCSP3 state before each test."""
+        clear()
+
+    def test_warns_deprecated(self):
+        """Test optimal_mus_naive emits DeprecationWarning."""
+        clear()
+
+        x = Var(dom=range(10))
+        c0 = x == 5
+        c1 = x == 7
+
+        with pytest.warns(DeprecationWarning):
+            result = optimal_mus_naive([c0, c1], solver="ace", verbose=-1)
+
+        assert len(result) == 2
+
+    def test_naive_finds_weighted_optimum(self):
+        """Test brute-force naive solver returns a minimum-weight MUS."""
+        clear()
+
+        x = Var(dom=range(10))
+
+        c0 = x == 1  # weight 1
+        c1 = x == 2  # weight 10
+        c2 = x == 3  # weight 100
+
+        soft = [c0, c1, c2]
+        weights = [1, 10, 100]
+
+        with pytest.warns(DeprecationWarning):
+            naive_result = optimal_mus_naive(soft, weights=weights, solver="ace", verbose=-1)
+        canonical_result = optimal_mus(soft, weights=weights, solver="ace", verbose=-1)
+
+        assert is_mus(naive_result, solver="ace", verbose=-1)
+        assert total_weight(naive_result, soft, weights) == total_weight(canonical_result, soft, weights)
+
+
 class TestOcusNaive:
     """Tests for OCUS naive implementation."""
 
