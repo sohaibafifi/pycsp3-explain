@@ -220,7 +220,8 @@ class TestOcusNaive:
 
         soft = [c0, c1]
 
-        result = ocus_naive(soft, solver="ace", verbose=-1)
+        with pytest.warns(DeprecationWarning):
+            result = ocus_naive(soft, solver="ace", verbose=-1)
 
         assert len(result) == 2
         assert is_mus(result, solver="ace", verbose=-1)
@@ -238,11 +239,70 @@ class TestOcusNaive:
         soft = [c0, c1, c2]
         weights = [1, 10, 100]
 
-        result = ocus_naive(soft, weights=weights, solver="ace", verbose=-1)
+        with pytest.warns(DeprecationWarning):
+            result = ocus_naive(soft, weights=weights, solver="ace", verbose=-1)
 
         # Should find MUS with lowest weight
         assert len(result) == 2
         assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_with_subset_constraints_and_predicate(self):
+        """Test ocus_naive supports constrained subset search."""
+        clear()
+
+        x = Var(dom=range(10))
+
+        c0 = x == 1
+        c1 = x == 2
+        c2 = x >= 0
+
+        soft = [c0, c1, c2]
+
+        def subset_constraints(select):
+            return [select[2] == 1]
+
+        def subset_predicate(indices):
+            return 2 in indices
+
+        with pytest.warns(DeprecationWarning):
+            result = ocus_naive(
+                soft,
+                solver="ace",
+                verbose=-1,
+                subset_constraints=subset_constraints,
+                subset_predicate=subset_predicate,
+            )
+
+        result_indices = {i for i, c in enumerate(soft) if constraint_in_list(c, result)}
+
+        assert len(result) == 3
+        assert subset_predicate(result_indices)
+        assert is_unsat(result, solver="ace", verbose=-1)
+
+    def test_ocus_naive_is_not_alias_of_optimal_mus_naive(self, monkeypatch):
+        """Test ocus_naive does not delegate to optimal_mus_naive."""
+        clear()
+        import importlib
+        mus_module = importlib.import_module("pycsp3_explain.explain.mus")
+
+        x = Var(dom=range(10))
+        c0 = x == 5
+        c1 = x == 7
+        soft = [c0, c1]
+
+        called = {"optimal_naive": False}
+
+        def fake_optimal_naive(*args, **kwargs):
+            called["optimal_naive"] = True
+            raise AssertionError("ocus_naive should not call optimal_mus_naive")
+
+        monkeypatch.setattr(mus_module, "optimal_mus_naive", fake_optimal_naive)
+
+        with pytest.warns(DeprecationWarning):
+            result = mus_module.ocus_naive(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert not called["optimal_naive"]
 
 
 class TestOcus:

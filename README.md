@@ -13,7 +13,7 @@ Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subse
   - `optimal_mus()` - Minimum total weight MUS
   - `optimal_mus_naive()` - Deprecated exhaustive minimum-weight MUS 
   - `ocus()` - OCUS with subset constraints/predicates
-  - `ocus_naive()` - Naive OCUS (alias for weighted MUS)
+  - `ocus_naive()` - Deprecated exhaustive OCUS with subset constraints/predicates
   > Note: IHS uses a small CP model in PyCSP3 and falls back to enumeration if needed.
 - **MSS (Maximal Satisfiable Subset)**: Find the maximum satisfiable portion
   - `mss()` - Assumption-based with core extraction
@@ -121,7 +121,7 @@ Given an infeasible constraint satisfaction problem (CSP), explanation tools hel
 - `optimal_mus_naive(soft, hard=None, weights=None, solver="ace")` - Deprecated exhaustive minimum-weight MUS (emits `DeprecationWarning`)
 - `smus(soft, hard=None, solver="ace")` - Smallest MUS (fewest constraints)
 - `ocus(soft, hard=None, weights=None, solver="ace", ...)` - OCUS with subset constraints
-- `ocus_naive(soft, hard=None, weights=None, solver="ace")` - Naive OCUS
+- `ocus_naive(soft, hard=None, weights=None, solver="ace", ...)` - Deprecated exhaustive OCUS with subset constraints (emits `DeprecationWarning`)
 - `OCUSException` - Exception for optimal MUS/OCUS routines
 
 ### MSS/MCS Functions

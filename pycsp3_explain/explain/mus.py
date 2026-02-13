@@ -941,7 +941,7 @@ def optimal_mus_naive(
     :raises AssertionError: If model is SAT
     """
     warnings.warn(
-        "optimal_mus_naive() is deprecated and kept for research purposes. use optimal_mus() instead",
+        "optimal_mus_naive() is deprecated and kept for compatibility; use optimal_mus().",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -1253,19 +1253,98 @@ def ocus_naive(
     hard: Optional[List[Any]] = None,
     weights: Optional[List[Union[int, float]]] = None,
     solver: str = "ace",
-    verbose: int = -1
+    verbose: int = -1,
+    subset_predicate: Optional[Callable[[Set[int]], bool]] = None,
+    subset_constraints: Optional[Callable[[List[Any]], Any]] = None,
 ) -> List[Any]:
     """
     Find an Optimal Constrained Unsatisfiable Subset (OCUS).
 
-    This is a naive implementation without assumption variables.
-    Equivalent to optimal_mus_naive for now.
+    Naive exhaustive implementation:
+    enumerate all subsets, filter by optional subset constraints/predicate,
+    keep constrained-minimal UNSAT subsets, and return the minimum-weight one.
+    Kept for compatibility; use ocus() for the canonical implementation.
 
     :param soft: List of soft constraints
     :param hard: List of hard constraints
     :param weights: Weight for each soft constraint
     :param solver: Solver name
     :param verbose: Verbosity level
-    :return: An optimal MUS according to weights
+    :param subset_predicate: Python predicate on selected indices
+    :param subset_constraints: Builder for PyCSP3 constraints on selection vars
+    :return: An optimal constrained MUS according to weights
+    :raises OCUSException: If no OCUS exists
+    :raises AssertionError: If model is SAT
     """
-    return optimal_mus_naive(soft, hard, weights, solver, verbose)
+    warnings.warn(
+        "ocus_naive() is deprecated and kept for reseach purpose; use ocus().",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        raise ValueError("soft constraints cannot be empty")
+
+    n = len(soft)
+    w: List[Union[int, float]] = weights if weights is not None else [1] * n
+    if len(w) != n:
+        raise ValueError(f"weights length ({len(w)}) must match soft length ({n})")
+
+    assert is_unsat(soft, hard, solver, verbose), \
+        "ocus_naive: model must be UNSAT"
+
+    subset_checker = _make_subset_checker(
+        n=n,
+        solver=solver,
+        verbose=verbose,
+        subset_predicate=subset_predicate,
+        subset_constraints=subset_constraints,
+    )
+
+    best_combo: Optional[tuple[int, ...]] = None
+    best_weight: Optional[Union[int, float]] = None
+
+    for size in range(1, n + 1):
+        for combo in combinations(range(n), size):
+            combo_set = set(combo)
+            if not subset_checker(combo_set):
+                continue
+
+            combo_subset = [soft[i] for i in combo]
+            if solve_subset(combo_subset, hard, solver, verbose) != SolveResult.UNSAT:
+                continue
+
+            is_minimal_subset = True
+            for pos in range(len(combo)):
+                reduced_combo = combo[:pos] + combo[pos + 1:]
+                reduced_set = set(reduced_combo)
+                if not subset_checker(reduced_set):
+                    continue
+                reduced_subset = [soft[i] for i in reduced_combo]
+                if solve_subset(reduced_subset, hard, solver, verbose) == SolveResult.UNSAT:
+                    is_minimal_subset = False
+                    break
+
+            if not is_minimal_subset:
+                continue
+
+            combo_weight = sum(w[i] for i in combo)
+            if (
+                best_weight is None
+                or combo_weight < best_weight
+                or (combo_weight == best_weight and (best_combo is None or combo < best_combo))
+            ):
+                best_combo = combo
+                best_weight = combo_weight
+                if verbose >= 0:
+                    print(
+                        f"ocus_naive: candidate OCUS size={len(combo)} weight={combo_weight}"
+                    )
+
+    if best_combo is None:
+        raise OCUSException("No constrained unsatisfiable subset could be found")
+
+    return [soft[i] for i in best_combo]
