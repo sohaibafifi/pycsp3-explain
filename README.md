@@ -18,10 +18,10 @@ Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subse
   - `mss()` - Assumption-based with core extraction
   - `mss_naive()` - Greedy growing algorithm
 - **Weighted MSS/MCS**: Optimize which constraints to keep/remove
-  - `mss_opt()` - Maximize total weight of kept constraints
-  - `mcs_opt()` - Minimize total weight of removed constraints
-  - `mss_heuristic()` - Heuristic weighted MSS
-  - `mcs_heuristic()` - Heuristic weighted MCS
+  - `mss_opt()` - Exact weighted MSS (Maximize total weight of kept constraints)
+  - `mcs_opt()` - Exact weighted MCS (Minimize total weight of removed constraints)
+  - `mss_heuristic()` - Greedy weighted MSS approximation
+  - `mcs_heuristic()` - Greedy weighted MCS approximation
 - **MCS (Minimal Correction Set)**: Find the minimal changes needed to restore satisfiability
   - `mcs()` - Via assumption-based MSS complement
   - `mcs_naive()` - Via naive MSS complement
@@ -126,11 +126,13 @@ Given an infeasible constraint satisfaction problem (CSP), explanation tools hel
 ### MSS/MCS Functions
 - `mss(soft, hard=None, solver="ace")` - Assumption-based MSS
 - `mss_naive(soft, hard=None, solver="ace")` - Greedy growing MSS
-- `mss_opt(soft, hard=None, weights=None, solver="ace")` - Weighted MSS
+- `mss_opt(soft, hard=None, weights=None, solver="ace")` - Exact weighted MSS
+- `mss_heuristic(soft, hard=None, weights=None, solver="ace")` - Greedy weighted MSS approximation
 - `is_mss(subset, soft, hard=None, solver="ace")` - Verify MSS validity
 - `mcs(soft, hard=None, solver="ace")` - Assumption-based MCS
 - `mcs_naive(soft, hard=None, solver="ace")` - Naive MCS
-- `mcs_opt(soft, hard=None, weights=None, solver="ace")` - Weighted MCS
+- `mcs_opt(soft, hard=None, weights=None, solver="ace")` - Exact weighted MCS
+- `mcs_heuristic(soft, hard=None, weights=None, solver="ace")` - Greedy weighted MCS approximation
 - `mcs_from_mss(mss, soft)` - Complement of MSS
 - `is_mcs(subset, soft, hard=None, solver="ace")` - Verify MCS validity
 

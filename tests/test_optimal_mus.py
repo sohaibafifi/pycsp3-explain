@@ -21,6 +21,17 @@ def constraint_in_list(constraint, constraint_list):
     return any(c is constraint for c in constraint_list)
 
 
+def total_weight(subset, soft, weights):
+    """Compute total weight of constraints in subset by identity."""
+    total = 0
+    for c in subset:
+        for i, orig in enumerate(soft):
+            if c is orig:
+                total += weights[i]
+                break
+    return total
+
+
 class TestSmus:
     """Tests for smallest MUS (SMUS) algorithm."""
 
@@ -280,6 +291,55 @@ class TestMssOpt:
         assert len(result) == 1
         assert is_mss(result, soft, solver="ace", verbose=-1)
 
+    def test_exact_beats_greedy_counterexample(self):
+        """Test that exact mss_opt can outperform greedy mss_heuristic."""
+        clear()
+        from pycsp3_explain.explain.mss import mss_opt, mss_heuristic
+
+        x = Var(dom=range(3))
+        y = Var(dom=range(2))
+
+        # Counterexample for greedy by descending weight:
+        # {c1, c2} is satisfiable with total weight 8; greedy picks {c0} with weight 5.
+        c0 = x == 0
+        c1 = x == 1
+        c2 = x + y >= 2
+
+        soft = [c0, c1, c2]
+        weights = [5, 4, 4]
+
+        exact = mss_opt(soft, weights=weights, solver="ace", verbose=-1)
+        greedy = mss_heuristic(soft, weights=weights, solver="ace", verbose=-1)
+
+        assert constraint_in_list(c1, exact)
+        assert constraint_in_list(c2, exact)
+        assert not constraint_in_list(c0, exact)
+        assert total_weight(exact, soft, weights) == 8
+
+        assert constraint_in_list(c0, greedy)
+        assert not constraint_in_list(c1, greedy)
+        assert not constraint_in_list(c2, greedy)
+        assert total_weight(greedy, soft, weights) == 5
+
+    def test_negative_weights_raise(self):
+        """Test that negative weights are rejected for weighted MSS."""
+        clear()
+        from pycsp3_explain.explain.mss import mss_opt, mss_heuristic
+
+        x = Var(dom=range(3))
+
+        c0 = x >= 0
+        c1 = x == 1
+        c2 = x <= 1
+
+        soft = [c0, c1, c2]
+        weights = [-5, 3, 2]
+
+        with pytest.raises(ValueError):
+            mss_opt(soft, weights=weights, solver="ace", verbose=-1)
+        with pytest.raises(ValueError):
+            mss_heuristic(soft, weights=weights, solver="ace", verbose=-1)
+
 
 class TestMcsOpt:
     """Tests for weighted MCS optimization."""
@@ -307,6 +367,54 @@ class TestMcsOpt:
         # MCS should be complement of MSS (exactly 2 constraints since MSS has 1)
         assert len(result) == 2
         assert is_mcs(result, soft, solver="ace", verbose=-1)
+
+    def test_exact_vs_heuristic_counterexample(self):
+        """Test mcs_opt differs from mcs_heuristic on a greedy counterexample."""
+        clear()
+        from pycsp3_explain.explain.mss import mcs_opt, mcs_heuristic
+
+        x = Var(dom=range(3))
+        y = Var(dom=range(2))
+
+        c0 = x == 0
+        c1 = x == 1
+        c2 = x + y >= 2
+
+        soft = [c0, c1, c2]
+        weights = [5, 4, 4]
+
+        exact = mcs_opt(soft, weights=weights, solver="ace", verbose=-1)
+        heur = mcs_heuristic(soft, weights=weights, solver="ace", verbose=-1)
+
+        assert total_weight(exact, soft, weights) == 5
+        assert total_weight(heur, soft, weights) == 8
+
+        assert constraint_in_list(c0, exact)
+        assert not constraint_in_list(c1, exact)
+        assert not constraint_in_list(c2, exact)
+
+        assert not constraint_in_list(c0, heur)
+        assert constraint_in_list(c1, heur)
+        assert constraint_in_list(c2, heur)
+
+    def test_negative_weights_raise(self):
+        """Test that negative weights are rejected for weighted MCS."""
+        clear()
+        from pycsp3_explain.explain.mss import mcs_opt, mcs_heuristic
+
+        x = Var(dom=range(3))
+
+        c0 = x >= 0
+        c1 = x == 1
+        c2 = x <= 1
+
+        soft = [c0, c1, c2]
+        weights = [-5, 3, 2]
+
+        with pytest.raises(ValueError):
+            mcs_opt(soft, weights=weights, solver="ace", verbose=-1)
+        with pytest.raises(ValueError):
+            mcs_heuristic(soft, weights=weights, solver="ace", verbose=-1)
 
 
 class TestEdgeCases:

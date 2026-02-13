@@ -25,8 +25,6 @@ from pycsp3_explain.explain.utils import (
 from pycsp3_explain.solvers.wrapper import (
     SolveResult,
     is_sat,
-    is_unsat,
-    solve_subset,
     solve_subset_with_core,
 )
 
@@ -369,6 +367,135 @@ def is_mcs(
     return True
 
 
+def _solve_weighted_mss_exact(
+    soft: List[Any],
+    hard: List[Any],
+    weights: Optional[List[Union[int, float]]],
+    solver: str,
+    verbose: int,
+) -> List[Any]:
+    """
+    Solve weighted MSS exactly with a single optimization model.
+
+    The objective is lexicographic:
+    1. Maximize total selected weight.
+    2. Break ties by maximizing number of selected constraints.
+    """
+    from pycsp3 import (
+        VarArray,
+        imply,
+        satisfy,
+        maximize,
+        Sum,
+        solve,
+        value,
+        ACE,
+        CHOCO,
+        SAT,
+        OPTIMUM,
+        UNSAT,
+    )
+    from pycsp3.classes.entities import CtrEntities, ObjEntities, AnnEntities
+    from pycsp3.compiler import Compilation
+    from pycsp3.dashboard import options as pycsp3_options
+    from pycsp3.tools.utilities import integer_scaling
+    import os
+    import tempfile
+    import uuid
+
+    if not soft:
+        return []
+
+    n = len(soft)
+    w: List[Union[int, float]] = weights if weights is not None else [1] * n
+    if len(w) != n:
+        raise ValueError(f"weights length ({len(w)}) must match soft length ({n})")
+    if any(weight < 0 for weight in w):
+        raise ValueError("weights must be non-negative")
+
+    # Scale float weights to integers for CP objective terms.
+    if any(isinstance(weight, float) and not weight.is_integer() for weight in w):
+        scaled_w = integer_scaling(w)
+    else:
+        scaled_w = [int(weight) for weight in w]
+
+    # Preserve variable state and only reset posted constraints/objectives.
+    saved_ctr_items = CtrEntities.items[:]
+    saved_obj_items = ObjEntities.items[:]
+    saved_ann_items = AnnEntities.items[:]
+    saved_ann_types = AnnEntities.items_types[:] if hasattr(AnnEntities, "items_types") else []
+    saved_compilation_done = Compilation.done
+    saved_compilation_model = Compilation.model
+    saved_compilation_string_model = Compilation.string_model
+
+    selected_indices: Optional[List[int]] = None
+    status = None
+
+    solver_type = ACE if solver.lower() == "ace" else CHOCO
+    temp_filename = os.path.join(
+        tempfile.gettempdir(),
+        f"pycsp3_explain_mss_opt_{uuid.uuid4().hex}.xml",
+    )
+    prev_compactor = pycsp3_options.dontruncompactor
+
+    try:
+        pycsp3_options.dontruncompactor = True
+
+        Compilation.done = False
+        Compilation.model = None
+        Compilation.string_model = None
+
+        CtrEntities.items = []
+        ObjEntities.items = []
+        AnnEntities.items = []
+        if hasattr(AnnEntities, "items_types"):
+            AnnEntities.items_types = []
+
+        select = VarArray(size=n, dom=range(2), id=f"mss_sel_{uuid.uuid4().hex[:8]}")
+
+        if hard:
+            satisfy(hard)
+        satisfy([imply(select[i], soft[i]) for i in range(n)])
+
+        tie_multiplier = n + 1
+        maximize(Sum(select[i] * (scaled_w[i] * tie_multiplier + 1) for i in range(n)))
+
+        status = solve(solver=solver_type, verbose=verbose, filename=temp_filename)
+
+        if status in (SAT, OPTIMUM):
+            selected_indices = [i for i in range(n) if value(select[i]) == 1]
+        elif status == UNSAT:
+            selected_indices = []
+    except Exception as exc:
+        if verbose >= 0:
+            print(f"mss_opt: exact solve failed ({exc}), falling back to heuristic")
+        return mss_heuristic(soft, hard, w, solver, verbose)
+    finally:
+        pycsp3_options.dontruncompactor = prev_compactor
+        try:
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+        except OSError:
+            pass
+
+        CtrEntities.items = saved_ctr_items
+        ObjEntities.items = saved_obj_items
+        AnnEntities.items = saved_ann_items
+        if hasattr(AnnEntities, "items_types"):
+            AnnEntities.items_types = saved_ann_types
+
+        Compilation.done = saved_compilation_done
+        Compilation.model = saved_compilation_model
+        Compilation.string_model = saved_compilation_string_model
+
+    if selected_indices is not None:
+        return [soft[i] for i in selected_indices]
+
+    if verbose >= 0:
+        print(f"mss_opt: exact solve returned {status}, falling back to heuristic")
+    return mss_heuristic(soft, hard, w, solver, verbose)
+
+
 def mss_opt(
     soft: List[Any],
     hard: Optional[List[Any]] = None,
@@ -379,14 +506,12 @@ def mss_opt(
     """
     Compute an optimal (weighted) Maximal Satisfiable Subset.
 
-    This implementation finds an MSS that maximizes the sum of weights
-    of included constraints. If no weights are provided, it maximizes
-    the number of constraints (equivalent to standard MSS).
+    This implementation builds and solves one optimization model:
+    - Decision variables select which soft constraints are enabled.
+    - Guard constraints enforce that selected constraints must hold.
+    - Objective maximizes total selected weight.
+    - Ties are broken by selecting more constraints.
 
-    Algorithm:
-    Uses an iterative approach to find the optimal weighted MSS.
-    For each constraint subset sorted by total weight (descending),
-    tests if it's SAT and returns the first maximal one found.
 
     :param soft: List of soft constraints
     :param hard: List of hard constraints
@@ -397,38 +522,7 @@ def mss_opt(
     """
     soft = flatten_constraints(soft)
     hard = flatten_constraints(hard) if hard else []
-
-    if not soft:
-        return []
-
-    n = len(soft)
-
-    # Default weights: all 1s
-    w: List[Union[int, float]] = weights if weights is not None else [1] * n
-    if len(w) != n:
-        raise ValueError(f"weights length ({len(w)}) must match soft length ({n})")
-
-    # If all constraints are SAT, return all
-    if is_sat(soft, hard, solver, verbose):
-        return soft
-
-    # Greedy approach: order by weight (higher weight first)
-    # Try to include high-weight constraints first
-    indexed_constraints = [(i, soft[i], w[i]) for i in range(n)]
-    indexed_constraints.sort(key=lambda x: -x[2])  # Sort by weight descending
-
-    mss_indices: set = set()
-
-    for i, c, weight in indexed_constraints:
-        # Try adding constraint to current MSS
-        test_subset = [soft[j] for j in mss_indices] + [c]
-        if is_sat(test_subset, hard, solver, verbose):
-            mss_indices.add(i)
-            if verbose >= 0:
-                print(f"mss_opt: added constraint {i} (weight {weight}), "
-                      f"MSS size: {len(mss_indices)}")
-
-    return [soft[i] for i in range(n) if i in mss_indices]
+    return _solve_weighted_mss_exact(soft, hard, weights, solver, verbose)
 
 
 def mcs_opt(
@@ -441,9 +535,8 @@ def mcs_opt(
     """
     Compute an optimal (weighted) Minimal Correction Set.
 
-    This implementation finds an MCS that minimizes the sum of weights
-    of removed constraints. If no weights are provided, it minimizes
-    the number of constraints (smallest MCS).
+    This implementation derives MCS from the exact weighted MSS:
+    MCS = soft \\ MSS_opt.
 
     :param soft: List of soft constraints
     :param hard: List of hard constraints
@@ -456,10 +549,6 @@ def mcs_opt(
     hard = flatten_constraints(hard) if hard else []
 
     if not soft:
-        return []
-
-    # If already SAT, no correction needed
-    if is_sat(soft, hard, solver, verbose):
         return []
 
     # Find optimal MSS and return its complement
@@ -514,6 +603,8 @@ def mss_heuristic(
     w: List[Union[int, float]] = weights if weights is not None else [1] * n
     if len(w) != n:
         raise ValueError(f"weights length ({len(w)}) must match soft length ({n})")
+    if any(weight < 0 for weight in w):
+        raise ValueError("weights must be non-negative")
 
     # If all constraints are SAT, return all
     if is_sat(soft, hard, solver, verbose):
@@ -532,7 +623,7 @@ def mss_heuristic(
         if is_sat(test_subset, hard, solver, verbose):
             mss_indices.add(i)
             if verbose >= 0:
-                print(f"mss_opt: added constraint {i} (weight {weight}), "
+                print(f"mss_heuristic: added constraint {i} (weight {weight}), "
                       f"MSS size: {len(mss_indices)}")
 
     return [soft[i] for i in range(n) if i in mss_indices]
@@ -569,10 +660,17 @@ def mcs_heuristic(
     if not soft:
         return []
 
+    n = len(soft)
+    w: List[Union[int, float]] = weights if weights is not None else [1] * n
+    if len(w) != n:
+        raise ValueError(f"weights length ({len(w)}) must match soft length ({n})")
+    if any(weight < 0 for weight in w):
+        raise ValueError("weights must be non-negative")
+
     # If already SAT, no correction needed
     if is_sat(soft, hard, solver, verbose):
         return []
 
-    # Find optimal MSS and return its complement
-    mss_result = mss_opt(soft, hard, weights, solver, verbose)
+    # Find heuristic MSS and return its complement
+    mss_result = mss_heuristic(soft, hard, w, solver, verbose)
     return mcs_from_mss(mss_result, soft)
