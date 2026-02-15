@@ -307,6 +307,32 @@ class TestQuickXplainIncremental:
         assert is_mus(result, solver="ace", verbose=-1)
 
 
+class TestTopLevelApi:
+    """Tests for top-level package API exports."""
+
+    def setup_method(self):
+        """Clear PyCSP3 state before each test."""
+        clear()
+
+    def test_top_level_quickxplain_incremental_export(self):
+        """Test quickxplain_incremental is exported at package top-level."""
+        clear()
+
+        from pycsp3_explain import quickxplain_incremental as qx_inc
+
+        x = VarArray(size=2, dom=range(10))
+        c0 = x[0] == 5
+        c1 = x[0] == 7
+        soft = [c0, c1]
+
+        result = qx_inc(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+
 class TestMusAssumptionBased:
     """Tests for assumption-based MUS algorithm."""
 

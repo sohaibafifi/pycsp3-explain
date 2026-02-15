@@ -43,6 +43,7 @@ from pycsp3_explain.explain.mus import (
     mus,
     mus_naive,
     quickxplain,
+    quickxplain_incremental,
     is_mus,
     all_mus_naive,
     optimal_mus,
@@ -102,6 +103,7 @@ __all__ = [
     "mus",
     "mus_naive",
     "quickxplain",
+    "quickxplain_incremental",
     "is_mus",
     "all_mus_naive",
     # Optimal MUS algorithms
