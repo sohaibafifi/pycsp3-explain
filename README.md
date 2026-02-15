@@ -2,6 +2,8 @@
 
 Explanation tools for PyCSP3 constraint models. Find minimal unsatisfiable subsets (MUS), maximal satisfiable subsets (MSS), and minimal correction sets (MCS) to debug and understand infeasible constraint problems.
 
+Algorithmic descriptions are documented in [ALGORITHMS.md](ALGORITHMS.md).
+
 ## Features
 
 - **MUS (Minimal Unsatisfiable Subset)**: Find the minimal set of conflicting constraints
