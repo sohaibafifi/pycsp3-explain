@@ -33,9 +33,7 @@ from pycsp3_explain.solvers.wrapper import (
     solve_subset,
     solve_subset_with_core,
     clean_pycsp3_state,
-    _save_pycsp3_state,
-    _restore_pycsp3_state,
-    _sigint_kill_solver,
+    _AssumptionSolveSession,
 )
 
 
@@ -536,26 +534,11 @@ def quickxplain_incremental(
     verbose: int = -1
 ) -> List[Any]:
     """
-    Find a preferred MUS using QuickXplain with incremental solving.
+    Find a preferred MUS using QuickXplain with incremental solving (reusable assumption sessions)
 
-    This implementation uses PyCSP3's incremental solving API to avoid
-    recompiling the entire model for each solver call. It creates indicator
-    variables (assumptions) once and uses satisfy()/unpost() to dynamically
-    enable/disable constraints.
-
-    Approach (similar to CPMpy's assumption-based solving):
-    ========================================================
-    1. Create indicator variables a[i] for each soft constraint c[i]
-    2. Post guard constraints: a[i] → c[i] (if indicator is True, constraint holds)
-    3. For each subset test, post constraints to fix a[i] = 1 for i in subset
-    4. Solve
-    5. Unpost the fixing constraints (keep guard constraints)
-    6. Repeat until MUS is found
-
-    This is more efficient than the non-incremental version because:
-    - Variables and guard constraints are created only once
-    - Only the "fixing" constraints change between solves
-    - Reduces overhead from model compilation
+    The method reuses one posted assumption model (hard + guards) and for each
+    subset check only posts/unposts fixing constraints. This reduces model
+    rebuilding overhead, although PyCSP3 still recompiles at each solve call.
 
     :param soft: List of soft constraints (order determines preference)
     :param hard: List of hard constraints (always included)
@@ -568,18 +551,6 @@ def quickxplain_incremental(
         Junker, U. "QUICKXPLAIN: Preferred Explanations and Relaxations for
         Over-Constrained Problems." AAAI 2004, pp. 167-172.
     """
-    from pycsp3 import (
-        VarArray, satisfy, unpost, solve, imply,
-        SAT, UNSAT, UNKNOWN, OPTIMUM, CORE,
-        ACE, CHOCO, ALL
-    )
-    from pycsp3.classes.main.constraints import auxiliary
-    from pycsp3.classes.entities import CtrEntities, ObjEntities, AnnEntities
-    from pycsp3.compiler import Compilation
-    import os
-    import tempfile
-    import uuid
-
     soft = flatten_constraints(soft)
     hard = flatten_constraints(hard) if hard else []
 
@@ -587,92 +558,19 @@ def quickxplain_incremental(
         raise ValueError("soft constraints cannot be empty")
 
     n = len(soft)
-
-    from pycsp3_explain.solvers.wrapper import disable_pycsp3_atexit
-    disable_pycsp3_atexit()
-
-    saved_state = _save_pycsp3_state()
-
-    # Clear any pre-posted constraints/objectives so they don't affect subset checks.
-    CtrEntities.items = []
-    ObjEntities.items = []
-    AnnEntities.items = []
-    if hasattr(AnnEntities, "items_types"):
-        AnnEntities.items_types = []
-
-    # Reset compilation state
-    Compilation.done = False
-    Compilation.model = None
-    Compilation.string_model = None
-
-    try:
-        auxiliary().cache = []
-        # Create indicator variables for each soft constraint
-        assump_id = f"qx_assump_{uuid.uuid4().hex[:8]}"
-        assump = VarArray(size=n, dom=range(2), id=assump_id)
-
-        # Post hard constraints first
-        if hard:
-            satisfy(hard)
-
-        # Post guard constraints: a[i] → c[i]
-        # When a[i] = 1, c[i] must be satisfied
-        guard_constraints = [imply(assump[i], soft[i]) for i in range(n)]
-        satisfy(guard_constraints)
-        guard_posting_count = len(CtrEntities.items)
-
-        # Track number of solver calls for debugging
+    with _AssumptionSolveSession(
+        soft=soft,
+        hard=hard,
+        solver=solver,
+        verbose=verbose,
+        name_prefix="qx_assump",
+    ) as session:
         solve_count = [0]
 
         def solve_with_assumptions(enabled_indices: List[int]) -> bool:
-            """
-            Solve with specific assumptions enabled.
-            Returns True if UNSAT, False if SAT.
-            """
             solve_count[0] += 1
-
-            # Reset compilation state for fresh solve
-            Compilation.done = False
-            Compilation.model = None
-            Compilation.string_model = None
-
-            # Fix all indicators: enabled -> 1, disabled -> 0
-            enabled = set(enabled_indices)
-            fixing = [assump[i] == (1 if i in enabled else 0) for i in range(n)]
-            satisfy(fixing)
-
-            solver_type = ACE if solver.lower() == "ace" else CHOCO
-            temp_filename = os.path.join(
-                tempfile.gettempdir(),
-                f"pycsp3_qx_{uuid.uuid4().hex}.xml"
-            )
-            from pycsp3.dashboard import options as pycsp3_options
-            prev_compactor = pycsp3_options.dontruncompactor
-
-            try:
-                pycsp3_options.dontruncompactor = True
-                with _sigint_kill_solver():
-                    status = solve(
-                        solver=solver_type,
-                        verbose=verbose,
-                        filename=temp_filename
-                    )
-
-                # Clean up temp file
-                try:
-                    if os.path.exists(temp_filename):
-                        os.remove(temp_filename)
-                except OSError:
-                    pass
-
-                return status in (UNSAT, CORE)
-
-            finally:
-                pycsp3_options.dontruncompactor = prev_compactor
-                # Unpost the fixing constraints to restore state for next call
-                # Remove all postings after the guard constraints
-                while len(CtrEntities.items) > guard_posting_count:
-                    unpost()
+            result, _ = session.solve(enabled_indices, extract_core=False)
+            return result == SolveResult.UNSAT
 
         # Verify the model is UNSAT with all soft constraints enabled
         all_indices = list(range(n))
@@ -722,7 +620,6 @@ def quickxplain_incremental(
 
             return delta1 + delta2
 
-        # Run QuickXplain
         result_indices = quickxplain_recursive(all_indices, [], [])
         result = [soft[i] for i in result_indices]
 
@@ -731,9 +628,6 @@ def quickxplain_incremental(
                   f"({solve_count[0]} solver calls)")
 
         return result
-
-    finally:
-        _restore_pycsp3_state(saved_state)
 
 
 def is_mus(
@@ -1277,7 +1171,7 @@ def ocus_naive(
     :raises AssertionError: If model is SAT
     """
     warnings.warn(
-        "ocus_naive() is deprecated and kept for reseach purpose; use ocus().",
+        "ocus_naive() is deprecated and kept for compatibility; use ocus().",
         DeprecationWarning,
         stacklevel=2,
     )

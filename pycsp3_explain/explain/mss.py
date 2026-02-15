@@ -19,13 +19,12 @@ from typing import List, Any, Optional, Union
 from pycsp3_explain.explain.utils import (
     flatten_constraints,
     order_by_num_variables,
-    make_assump_model,
     get_constraint_variables,
 )
 from pycsp3_explain.solvers.wrapper import (
     SolveResult,
     is_sat,
-    solve_subset_with_core,
+    _AssumptionSolveSession,
 )
 
 
@@ -100,8 +99,9 @@ def mss(
     """
     Compute a Maximal Satisfiable Subset using assumption indicators.
 
-    This implementation uses assumptions for incremental solving,
-    leveraging core extraction to identify conflicts efficiently.
+    This implementation uses assumptions for incremental solving, and reuses one posted assumption model:
+    - hard constraints and guard implications are posted once,
+    - each subset check only posts/unposts fixing constraints.
 
     :param soft: List of soft constraints (candidates for MSS)
     :param hard: List of hard constraints (always included, not in MSS)
@@ -120,78 +120,59 @@ def mss(
     if not soft:
         return []
 
-    soft, hard, assumptions, guard_constraints = make_assump_model(soft, hard)
-
-    def solve_with_assumptions(assumed_indices: List[int]):
-        assumption_constraints = [assumptions[i] == 1 for i in assumed_indices]
-        soft_constraints = guard_constraints + assumption_constraints
-        return solve_subset_with_core(soft_constraints, hard, solver, verbose)
-
-    def core_to_assumptions(core_indices: List[int], assumed_indices: List[int]) -> set[int]:
-        """Map core indices back to assumption indices."""
-        core_assumps = set()
-        hard_offset = len(hard)
-        guard_count = len(guard_constraints)
-        for idx in core_indices:
-            if idx < hard_offset:
-                continue
-            rel = idx - hard_offset
-            if rel < guard_count:
-                core_assumps.add(rel)
-                continue
-            rel -= guard_count
-            if 0 <= rel < len(assumed_indices):
-                core_assumps.add(assumed_indices[rel])
-        return core_assumps
-
-    # Check if all soft constraints are satisfiable
-    all_indices = list(range(len(soft)))
-    result, _ = solve_with_assumptions(all_indices)
-    if result == SolveResult.SAT:
-        return soft  # All constraints are satisfiable
-
     def num_vars(i: int) -> int:
         try:
             return len(get_constraint_variables(soft[i]))
         except Exception:
             return 0
 
-    # Order by number of variables (fewer first - less likely to conflict)
-    ordered = sorted(all_indices, key=num_vars, reverse=False)
-
-    mss_indices = set()
-    excluded = set()
-
-    for idx in ordered:
-        if idx in excluded:
-            continue
-
-        # Try adding idx to current MSS
-        test_indices = sorted(mss_indices | {idx})
-        result, core_indices = solve_with_assumptions(test_indices)
-
+    with _AssumptionSolveSession(
+        soft=soft,
+        hard=hard,
+        solver=solver,
+        verbose=verbose,
+        name_prefix="mss_assump",
+    ) as session:
+        all_indices = list(range(len(soft)))
+        result, _ = session.solve(all_indices, extract_core=False)
         if result == SolveResult.SAT:
-            mss_indices.add(idx)
-        elif result == SolveResult.UNSAT:
-            # Extract core and mark conflicting indices
-            core = core_to_assumptions(core_indices, test_indices)
-            if idx in core:
-                excluded.add(idx)
-            elif core:
-                # Core doesn't contain idx, but something in mss_indices
-                # This shouldn't happen if we're growing correctly, but handle it
-                excluded.add(idx)
-        else:
-            # UNKNOWN/ERROR - fall back to naive check
-            if is_sat(
-                [soft[i] for i in mss_indices] + [soft[idx]],
-                hard, solver, verbose
-            ):
-                mss_indices.add(idx)
-            else:
-                excluded.add(idx)
+            return soft  # All constraints are satisfiable
 
-    return [soft[i] for i in range(len(soft)) if i in mss_indices]
+        # Order by number of variables (fewer first - less likely to conflict)
+        ordered = sorted(all_indices, key=num_vars, reverse=False)
+
+        mss_indices = set()
+        excluded = set()
+
+        for idx in ordered:
+            if idx in excluded:
+                continue
+
+            # Try adding idx to current MSS
+            test_indices = sorted(mss_indices | {idx})
+            result, core = session.solve(test_indices, extract_core=True)
+
+            if result == SolveResult.SAT:
+                mss_indices.add(idx)
+            elif result == SolveResult.UNSAT:
+                core_set = set(core)
+                if idx in core_set:
+                    excluded.add(idx)
+                elif core_set:
+                    # Core doesn't contain idx, but something in mss_indices
+                    # This shouldn't happen if we're growing correctly, but handle it
+                    excluded.add(idx)
+            else:
+                # UNKNOWN/ERROR - fall back to naive check
+                if is_sat(
+                    [soft[i] for i in mss_indices] + [soft[idx]],
+                    hard, solver, verbose
+                ):
+                    mss_indices.add(idx)
+                else:
+                    excluded.add(idx)
+
+        return [soft[i] for i in range(len(soft)) if i in mss_indices]
 
 
 def is_mss(

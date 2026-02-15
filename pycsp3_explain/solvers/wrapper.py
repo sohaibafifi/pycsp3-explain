@@ -12,7 +12,7 @@ import atexit
 import re
 import signal
 import subprocess
-from typing import List, Any, Optional, Tuple, Generator, NamedTuple, Dict, FrozenSet
+from typing import List, Any, Optional, Tuple, Generator, NamedTuple, Dict, FrozenSet, Set
 from enum import Enum
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -434,6 +434,235 @@ def clean_pycsp3_state() -> Generator[None, None, None]:
         yield
     finally:
         _restore_pycsp3_state(saved_state)
+
+
+class _AssumptionSolveSession:
+    """
+    Reusable assumption-based solve session.
+
+    The session posts hard constraints and guard implications once:
+        a[i] -> soft[i]
+    and then supports repeated subset checks by posting/unposting only
+    fixing constraints:
+        a[j] == 1 for selected indices j.
+
+    Note: PyCSP3 still recompiles per solve call; this primarily avoids
+    rebuilding variables/guard constraints and repeated state wiring.
+    """
+
+    def __init__(
+        self,
+        soft: ConstraintList,
+        hard: Optional[ConstraintList] = None,
+        solver: str = "ace",
+        verbose: int = -1,
+        name_prefix: str = "assump",
+    ) -> None:
+        self._soft = _normalize_constraints(soft)
+        self._hard = _normalize_constraints(hard)
+        self._solver = solver
+        self._verbose = verbose
+        self._name_prefix = name_prefix
+        self._n = len(self._soft)
+
+        if not self._soft:
+            raise ValueError("soft constraints cannot be empty")
+
+        self._saved_state: Optional[_PyCSP3State] = None
+        self._entered = False
+        self._solve_calls = 0
+
+        # Runtime-populated attributes
+        self._assumptions: Optional[List[Any]] = None
+        self._base_posting_count = 0
+        self._solver_type = None
+        self._SAT = None
+        self._OPTIMUM = None
+        self._UNSAT = None
+        self._CORE = None
+        self._satisfy_fn = None
+        self._solve_fn = None
+        self._core_fn = None
+        self._unpost_fn = None
+        self._CtrEntities = None
+        self._ObjEntities = None
+        self._AnnEntities = None
+        self._Compilation = None
+        self._pycsp3_options = None
+
+    @property
+    def solve_calls(self) -> int:
+        return self._solve_calls
+
+    def __enter__(self) -> "_AssumptionSolveSession":
+        from pycsp3 import (
+            VarArray,
+            imply,
+            satisfy,
+            solve,
+            core as pycsp3_core,
+            unpost,
+            ACE,
+            CHOCO,
+            SAT,
+            OPTIMUM,
+            UNSAT,
+            CORE,
+        )
+        from pycsp3.classes.main.constraints import auxiliary
+        from pycsp3.classes.entities import CtrEntities, ObjEntities, AnnEntities
+        from pycsp3.compiler import Compilation
+        from pycsp3.dashboard import options as pycsp3_options
+        import uuid
+
+        disable_pycsp3_atexit()
+        self._saved_state = _save_pycsp3_state()
+
+        # Keep variable state, but clear posted constraints/objectives/annotations.
+        CtrEntities.items = []
+        ObjEntities.items = []
+        AnnEntities.items = []
+        if hasattr(AnnEntities, "items_types"):
+            AnnEntities.items_types = []
+
+        # Reset compilation state for the working model.
+        Compilation.done = False
+        Compilation.model = None
+        Compilation.string_model = None
+
+        auxiliary().cache = []
+        assump_id = f"{self._name_prefix}_{uuid.uuid4().hex[:8]}"
+        assumptions = VarArray(size=self._n, dom=range(2), id=assump_id)
+
+        if self._hard:
+            satisfy(self._hard)
+        satisfy([imply(assumptions[i], self._soft[i]) for i in range(self._n)])
+
+        self._base_posting_count = len(CtrEntities.items)
+        self._assumptions = list(assumptions)
+        self._solver_type = ACE if self._solver.lower() == "ace" else CHOCO
+        self._SAT = SAT
+        self._OPTIMUM = OPTIMUM
+        self._UNSAT = UNSAT
+        self._CORE = CORE
+        self._satisfy_fn = satisfy
+        self._solve_fn = solve
+        self._core_fn = pycsp3_core
+        self._unpost_fn = unpost
+        self._CtrEntities = CtrEntities
+        self._ObjEntities = ObjEntities
+        self._AnnEntities = AnnEntities
+        self._Compilation = Compilation
+        self._pycsp3_options = pycsp3_options
+        self._entered = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._saved_state is not None:
+            _restore_pycsp3_state(self._saved_state)
+        self._entered = False
+
+    def _reset_compilation(self) -> None:
+        self._Compilation.done = False
+        self._Compilation.model = None
+        self._Compilation.string_model = None
+
+    def _cleanup_fixings(self) -> None:
+        while len(self._CtrEntities.items) > self._base_posting_count:
+            self._unpost_fn()
+
+    def _map_core_to_assumptions(
+        self,
+        core_indices: List[int],
+        assumed_indices: List[int],
+    ) -> List[int]:
+        assumption_core: Set[int] = set()
+        hard_offset = len(self._hard)
+        guard_count = self._n
+
+        for idx in core_indices:
+            if idx < hard_offset:
+                continue
+            rel = idx - hard_offset
+            if rel < guard_count:
+                assumption_core.add(rel)
+                continue
+            rel -= guard_count
+            if 0 <= rel < len(assumed_indices):
+                assumption_core.add(assumed_indices[rel])
+
+        return sorted(assumption_core)
+
+    def solve(
+        self,
+        assumed_indices: List[int],
+        extract_core: bool = False,
+        timeout: Optional[int] = None,
+    ) -> Tuple[SolveResult, List[int]]:
+        """
+        Solve the session model with selected assumption indices enabled.
+
+        :param assumed_indices: soft constraint indices forced to be active
+        :param extract_core: whether to request UNSAT core extraction
+        :param timeout: optional timeout (seconds)
+        :return: (SolveResult, core_assumption_indices)
+        """
+        import uuid
+
+        if not self._entered or self._assumptions is None:
+            raise RuntimeError("Assumption session is not active")
+
+        assumed = list(dict.fromkeys(assumed_indices))
+        if any(i < 0 or i >= self._n for i in assumed):
+            raise ValueError("assumed_indices contains indices out of range")
+
+        self._solve_calls += 1
+        temp_filename = os.path.join(
+            tempfile.gettempdir(),
+            f"pycsp3_explain_assump_{uuid.uuid4().hex}.xml",
+        )
+        options_str = f"-t={timeout}s" if timeout else ""
+        prev_compactor = self._pycsp3_options.dontruncompactor
+
+        core_assumptions: List[int] = []
+        try:
+            self._reset_compilation()
+            fixings = [self._assumptions[i] == 1 for i in assumed]
+            if fixings:
+                self._satisfy_fn(fixings)
+
+            self._pycsp3_options.dontruncompactor = True
+            with _sigint_kill_solver():
+                status = self._solve_fn(
+                    solver=self._solver_type,
+                    verbose=self._verbose,
+                    options=options_str,
+                    filename=temp_filename,
+                    extraction=extract_core,
+                )
+
+            if extract_core:
+                raw_core = _parse_core_indices(self._core_fn())
+                core_assumptions = self._map_core_to_assumptions(raw_core, assumed)
+
+            if status in (self._SAT, self._OPTIMUM):
+                return SolveResult.SAT, core_assumptions
+            if status in (self._UNSAT, self._CORE):
+                return SolveResult.UNSAT, core_assumptions
+            return SolveResult.UNKNOWN, core_assumptions
+        except Exception as exc:
+            if self._verbose >= 0:
+                print(f"Assumption session solve error: {exc}")
+                traceback.print_exc()
+            return SolveResult.ERROR, []
+        finally:
+            self._pycsp3_options.dontruncompactor = prev_compactor
+            self._cleanup_fixings()
+            try:
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+            except OSError:
+                pass
 
 
 def _solve_subset_internal(
