@@ -4,12 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
-MANIFEST="${MANIFEST:-$SCRIPT_DIR/sat11_manifest.tsv}"
 DATASET_ROOT="${DATASET_ROOT:-$REPO_ROOT/benchmarks/SAT11-Competition-MUS-SelectedBenchmarks}"
 RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/results}"
 
-METHODS_CSV="${METHODS_CSV:-marco,marco_core_cpmpy}"
-REPEATS="${REPEATS:-1}"
 TIMEOUT_S="${TIMEOUT_S:-1200}"
 
 RUN_VALIDATE="${RUN_VALIDATE:-0}"
@@ -29,49 +26,43 @@ SOLVER="${SOLVER:-ortools}"
 MAP_SOLVER="${MAP_SOLVER:-ortools}"
 
 TASK_ID="${SLURM_ARRAY_TASK_ID:-${OAR_ARRAY_INDEX:-${OAR_JOBARRAY_INDEX:-${TASK_ID:-}}}}"
-if [[ -z "${TASK_ID}" ]]; then
-  echo "No task index found. Provide SLURM_ARRAY_TASK_ID, OAR_ARRAY_INDEX, OAR_JOBARRAY_INDEX, or TASK_ID."
-  exit 1
+TASK_LABEL="${TASK_ID:-param}"
+
+instance_rel=""
+method=""
+rep_id=""
+
+# Mode A: first argument is a params file (line selection by task index).
+if [[ $# -ge 1 && -f "${1}" ]]; then
+  PARAMS_FILE="${1}"
+  if [[ -z "${TASK_ID}" ]]; then
+    echo "No task index found. Provide SLURM_ARRAY_TASK_ID/OAR_ARRAY_INDEX/OAR_JOBARRAY_INDEX/TASK_ID."
+    exit 1
+  fi
+
+  line="$(sed -n "${TASK_ID}p" "${PARAMS_FILE}")"
+  if [[ -z "${line}" ]]; then
+    echo "No params row for task index ${TASK_ID} in ${PARAMS_FILE}"
+    exit 1
+  fi
+
+  IFS=$'\t' read -r instance_rel method rep_id _ <<< "${line}"
+  if [[ -z "${instance_rel}" || -z "${method}" || -z "${rep_id}" ]]; then
+    read -r instance_rel method rep_id _ <<< "${line}"
+  fi
+else
+  # Mode B: direct row arguments (for OAR --array-param-file), expected:
+  #   run_array_task.sh <instance_rel> <method> <rep_id>
+  instance_rel="${1:-}"
+  method="${2:-}"
+  rep_id="${3:-}"
 fi
 
-if [[ ! -f "$MANIFEST" ]]; then
-  echo "Manifest not found: $MANIFEST"
+if [[ -z "${instance_rel}" || -z "${method}" || -z "${rep_id}" ]]; then
+  echo "Invalid task parameters. Need: <instance_rel> <method> <rep_id>."
+  echo "Either call with a params file + task index env, or pass direct args."
   exit 1
 fi
-
-INSTANCES=()
-while IFS= read -r line; do
-  [[ -z "${line//[[:space:]]/}" ]] && continue
-  INSTANCES+=("$line")
-done < "$MANIFEST"
-if [[ "${#INSTANCES[@]}" -eq 0 ]]; then
-  echo "Manifest is empty: $MANIFEST"
-  exit 1
-fi
-
-IFS=',' read -r -a METHODS <<< "$METHODS_CSV"
-if [[ "${#METHODS[@]}" -eq 0 ]]; then
-  echo "METHODS_CSV yielded no methods: $METHODS_CSV"
-  exit 1
-fi
-
-N_INST="${#INSTANCES[@]}"
-N_METHOD="${#METHODS[@]}"
-TOTAL=$((N_INST * N_METHOD * REPEATS))
-
-if (( TASK_ID < 0 || TASK_ID >= TOTAL )); then
-  echo "TASK_ID=${TASK_ID} out of range [0,$((TOTAL-1))]"
-  exit 1
-fi
-
-inst_idx=$(( TASK_ID % N_INST ))
-tmp=$(( TASK_ID / N_INST ))
-meth_idx=$(( tmp % N_METHOD ))
-rep_id=$(( tmp / N_METHOD ))
-
-line="${INSTANCES[$inst_idx]}"
-instance_rel="$(printf "%s" "$line" | cut -f1)"
-method="${METHODS[$meth_idx]}"
 
 mkdir -p "$RESULTS_DIR/runs" "$RESULTS_DIR/logs"
 
@@ -86,7 +77,9 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-CSV_OUT="$RESULTS_DIR/runs/${method}__rep${rep_id}__inst${inst_idx}.csv"
+JOB_LABEL="${SLURM_ARRAY_JOB_ID:-${OAR_JOB_ID:-local}}"
+instance_tag="$(printf "%s" "$instance_rel" | tr '/.' '__' | tr -cd '[:alnum:]_-' | cut -c1-80)"
+CSV_OUT="$RESULTS_DIR/runs/${method}__rep${rep_id}__${instance_tag}__job${JOB_LABEL}__task${TASK_LABEL}.csv"
 
 CMD=(
   python3 "$REPO_ROOT/benchmarks/bench_marco_sat11.py"
@@ -124,7 +117,7 @@ if [[ "$NO_FEEDBACK" == "1" ]]; then
   CMD+=(--no-feedback)
 fi
 
-echo "[task] id=$TASK_ID inst_idx=$inst_idx method=$method rep=$rep_id"
+echo "[task] id=${TASK_LABEL} method=$method rep=$rep_id"
 echo "[task] instance=$instance_rel"
 echo "[task] output=$CSV_OUT"
 

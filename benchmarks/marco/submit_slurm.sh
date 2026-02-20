@@ -4,22 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
-MANIFEST="${MANIFEST:-$SCRIPT_DIR/sat11_manifest.tsv}"
-if [[ ! -f "$MANIFEST" ]]; then
-  echo "Manifest not found: $MANIFEST"
-  echo "Build it first with: python3 $SCRIPT_DIR/build_manifest.py"
+PARAMS_FILE="${PARAMS_FILE:-$SCRIPT_DIR/array_params.tsv}"
+if [[ ! -f "$PARAMS_FILE" ]]; then
+  echo "Array params file not found: $PARAMS_FILE"
+  echo "Build it first with:"
+  echo "  python3 $SCRIPT_DIR/build_manifest.py ..."
+  echo "  python3 $SCRIPT_DIR/build_array_params.py ..."
   exit 1
 fi
 
-METHODS_CSV="${METHODS_CSV:-marco,marco_core_cpmpy}"
-REPEATS="${REPEATS:-1}"
-
-IFS=',' read -r -a METHODS <<< "$METHODS_CSV"
-N_METHODS="${#METHODS[@]}"
-N_INSTANCES="$(awk 'NF{c++} END{print c+0}' "$MANIFEST")"
-TOTAL=$((N_INSTANCES * N_METHODS * REPEATS))
-if (( TOTAL <= 0 )); then
-  echo "No jobs to submit (instances=$N_INSTANCES methods=$N_METHODS repeats=$REPEATS)"
+N_ROWS="$(awk 'NF{c++} END{print c+0}' "$PARAMS_FILE")"
+if (( N_ROWS <= 0 )); then
+  echo "No jobs to submit (rows=$N_ROWS)"
   exit 1
 fi
 
@@ -34,21 +30,19 @@ mkdir -p "$RESULTS_DIR/logs"
 LOG_PATTERN="${LOG_PATTERN:-$RESULTS_DIR/logs/%A_%a.out}"
 
 echo "Submitting Slurm array"
-echo "  manifest      : $MANIFEST"
-echo "  instances     : $N_INSTANCES"
-echo "  methods       : $METHODS_CSV"
-echo "  repeats       : $REPEATS"
-echo "  total tasks   : $TOTAL"
+echo "  params-file   : $PARAMS_FILE"
+echo "  total rows    : $N_ROWS"
 echo "  array limit   : $ARRAY_MAX_PARALLEL"
 echo "  resources     : cpu=$CPUS_PER_TASK mem=$MEM_PER_TASK time=$WALLTIME"
 
 sbatch \
   --job-name="$JOB_NAME" \
-  --array="0-$((TOTAL-1))%$ARRAY_MAX_PARALLEL" \
+  --array="1-${N_ROWS}%$ARRAY_MAX_PARALLEL" \
   --cpus-per-task="$CPUS_PER_TASK" \
   --mem="$MEM_PER_TASK" \
   --time="$WALLTIME" \
   --output="$LOG_PATTERN" \
-  --export=ALL,REPO_ROOT="$REPO_ROOT",MANIFEST="$MANIFEST",RESULTS_DIR="$RESULTS_DIR",METHODS_CSV="$METHODS_CSV",REPEATS="$REPEATS" \
+  --export=ALL,REPO_ROOT="$REPO_ROOT",RESULTS_DIR="$RESULTS_DIR" \
   "$SCRIPT_DIR/run_array_task.sh" \
+  "$PARAMS_FILE" \
   "$@"
