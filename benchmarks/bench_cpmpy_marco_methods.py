@@ -4,7 +4,7 @@ Benchmark CPMPy MARCO methods on shared UNSAT cases.
 
 Compares:
 - CPMPy original MARCO (`cpmpy.tools.explain.marco.marco`)
-- CPMPy MARCO-CORE port (`benchmarks.cpmpy_marco_core.marco_core_cpmpy`)
+- CPMPy MARCO-ADAPTIVE (`benchmarks.cpmpy_marco_adaptive.marco_adaptive`)
 
 Usage:
     python benchmarks/bench_cpmpy_marco_methods.py
@@ -35,9 +35,9 @@ except ImportError:
 from cpmpy.tools.explain.marco import marco as cpmpy_marco
 
 if __package__:
-    from .cpmpy_marco_core import marco_core
+    from .cpmpy_marco_adaptive import marco_adaptive
 else:
-    from cpmpy_marco_core import marco_core
+    from cpmpy_marco_adaptive import marco_adaptive
 
 Constraint = object
 CaseBuilder = Callable[[], Tuple[List[Constraint], List[Constraint]]]
@@ -204,7 +204,7 @@ CASES: Dict[str, CaseBuilder] = {
 
 METHODS: Dict[str, MarcoMethod] = {
     "marco": cpmpy_marco,
-    "marco_core_cpmpy": marco_core,
+    "marco_adaptive": marco_adaptive,
 }
 
 
@@ -309,7 +309,7 @@ def run_once(
             "return_mcs": True,
             "do_solution_hint": do_solution_hint,
         }
-        if method_name == "marco_core_cpmpy":
+        if method_name == "marco_adaptive":
             if handoff_threshold > 0:
                 method_kwargs["handoff_threshold"] = handoff_threshold
             method_kwargs["batch_base_ratio"] = batch_base_ratio
@@ -536,19 +536,19 @@ def main() -> None:
         "--core-handoff",
         type=int,
         default=-1,
-        help="Optional handoff threshold for marco_core_cpmpy (<=0 means algorithm default)",
+        help="Optional handoff threshold for marco_adaptive (<=0 means algorithm default)",
     )
     parser.add_argument(
         "--core-base-ratio",
         type=int,
         default=2,
-        help="Batch base ratio for marco_core_cpmpy",
+        help="Batch base ratio for marco_adaptive",
     )
     parser.add_argument(
         "--core-backoff-cap",
         type=int,
         default=8,
-        help="SAT backoff exponent cap for marco_core_cpmpy",
+        help="SAT backoff exponent cap for marco_adaptive",
     )
     parser.add_argument("--no-feedback", action="store_true", help="Disable dual-side feedback learning")
     parser.add_argument(
@@ -567,7 +567,7 @@ def main() -> None:
         "--feedback-max-clauses",
         type=int,
         default=2000,
-        help="Max learned feedback clauses for marco_core_cpmpy (<=0 means unbounded)",
+        help="Max learned feedback clauses for marco_adaptive (<=0 means unbounded)",
     )
     parser.add_argument("--no-solution-hint", action="store_true", help="Disable map-solver solution hints")
     parser.add_argument("--skip-validate", action="store_true", help="Skip MUS/MCS validity checks")

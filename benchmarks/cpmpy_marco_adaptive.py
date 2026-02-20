@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CPMPy-native MARCO-CORE implementation for benchmark comparisons.
+CPMPy-native MARCO-ADAPTIVE implementation for benchmark comparisons.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from cpmpy.tools.explain.utils import make_assump_model
 from cpmpy.transformations.get_variables import get_variables
 
 
-def marco_core(
+def marco_adaptive(
     soft,
     hard=None,
     solver: str = "ortools",
@@ -47,7 +47,7 @@ def marco_core(
 
     assert hasattr(
         cp.SolverLookup.get(solver), "get_core"
-    ), "marco_core_cpmpy requires a solver that supports assumptions/core extraction"
+    ), "marco_adaptive requires a solver that supports assumptions/core extraction"
 
     model, soft, assump = make_assump_model(soft, hard)
     dmap = dict(zip(assump, soft))

@@ -42,9 +42,9 @@ except ImportError:
 from cpmpy.tools.explain.marco import marco as cpmpy_marco
 
 if __package__:
-    from .cpmpy_marco_core import marco_core
+    from .cpmpy_marco_adaptive import marco_adaptive
 else:
-    from cpmpy_marco_core import marco_core
+    from cpmpy_marco_adaptive import marco_adaptive
 
 
 P_HEADER = re.compile(r"^p\s+cnf\s+(\d+)\s+(\d+)\s*$")
@@ -304,8 +304,8 @@ def worker_enumerate(payload: Dict, out_q: mp.Queue) -> None:
                 "return_mcs": True,
                 "do_solution_hint": do_solution_hint,
             }
-        elif method_name == "marco_core":
-            method = marco_core
+        elif method_name == "marco_adaptive":
+            method = marco_adaptive
             kwargs = {
                 "hard": hard,
                 "solver": solver,
@@ -668,8 +668,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--methods",
-        default="marco,marco_core",
-        help="Comma-separated methods: marco,marco_core",
+        default="marco,marco_adaptive",
+        help="Comma-separated methods: marco,marco_adaptive",
     )
     parser.add_argument(
         "--instances",
@@ -707,10 +707,10 @@ def main() -> None:
     parser.add_argument("--validate", action="store_true", help="Validate each produced MUS/MCS (expensive)")
 
     parser.add_argument("--no-solution-hint", action="store_true", help="Disable map solver solution hints")
-    parser.add_argument("--core-handoff", type=int, default=-1, help="marco_core handoff threshold")
-    parser.add_argument("--core-base-ratio", type=int, default=2, help="marco_core batch base ratio")
-    parser.add_argument("--core-backoff-cap", type=int, default=8, help="marco_core SAT backoff cap")
-    parser.add_argument("--no-feedback", action="store_true", help="Disable feedback in marco_core")
+    parser.add_argument("--core-handoff", type=int, default=-1, help="marco_adaptive handoff threshold")
+    parser.add_argument("--core-base-ratio", type=int, default=2, help="marco_adaptive batch base ratio")
+    parser.add_argument("--core-backoff-cap", type=int, default=8, help="marco_adaptive SAT backoff cap")
+    parser.add_argument("--no-feedback", action="store_true", help="Disable feedback in marco_adaptive")
     parser.add_argument("--feedback-sat-clause-max", type=int, default=12, help="Feedback SAT clause max length")
     parser.add_argument("--feedback-unsat-clause-max", type=int, default=12, help="Feedback UNSAT clause max size")
     parser.add_argument("--feedback-max-clauses", type=int, default=2000, help="Max learned feedback clauses")
@@ -721,7 +721,7 @@ def main() -> None:
     args = parser.parse_args()
 
     methods = parse_csv_list(args.methods)
-    allowed = {"marco", "marco_core"}
+    allowed = {"marco", "marco_adaptive"}
     for m in methods:
         if m not in allowed:
             raise ValueError(f"Unknown method '{m}'. Allowed: {', '.join(sorted(allowed))}")
