@@ -42,6 +42,9 @@ __version__ = "0.1.0"
 from pycsp3_explain.explain.mus import (
     mus,
     mus_naive,
+    mus_bicore,
+    mus_cpqx,
+    mus_bicore_qx,
     quickxplain,
     quickxplain_incremental,
     is_mus,
@@ -72,9 +75,12 @@ from pycsp3_explain.explain.mss import (
 # Import MARCO enumeration
 from pycsp3_explain.explain.marco import (
     marco,
+    marco_core,
     marco_naive,
     all_mus,
+    all_mus_core,
     all_mcs,
+    all_mcs_core,
 )
 
 # Import utility functions
@@ -102,6 +108,9 @@ __all__ = [
     # MUS algorithms
     "mus",
     "mus_naive",
+    "mus_bicore",
+    "mus_cpqx",
+    "mus_bicore_qx",
     "quickxplain",
     "quickxplain_incremental",
     "is_mus",
@@ -128,9 +137,12 @@ __all__ = [
     "is_mcs",
     # MARCO enumeration
     "marco",
+    "marco_core",
     "marco_naive",
     "all_mus",
+    "all_mus_core",
     "all_mcs",
+    "all_mcs_core",
     # Utilities
     "flatten_constraints",
     "get_constraint_variables",

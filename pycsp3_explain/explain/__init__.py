@@ -12,6 +12,8 @@ This module provides implementations of:
 from pycsp3_explain.explain.mus import (
     mus,
     mus_naive,
+    mus_bicore,
+    mus_cpqx,
     quickxplain,
     quickxplain_incremental,
     is_mus,
@@ -40,9 +42,12 @@ from pycsp3_explain.explain.mss import (
 
 from pycsp3_explain.explain.marco import (
     marco,
+    marco_core,
     marco_naive,
     all_mus,
+    all_mus_core,
     all_mcs,
+    all_mcs_core,
 )
 
 from pycsp3_explain.explain.utils import (
@@ -58,6 +63,8 @@ __all__ = [
     # MUS algorithms
     "mus",
     "mus_naive",
+    "mus_bicore",
+    "mus_cpqx",
     "quickxplain",
     "quickxplain_incremental",
     "is_mus",
@@ -84,9 +91,12 @@ __all__ = [
     "is_mcs",
     # MARCO enumeration
     "marco",
+    "marco_core",
     "marco_naive",
     "all_mus",
+    "all_mus_core",
     "all_mcs",
+    "all_mcs_core",
     # Utilities
     "flatten_constraints",
     "get_constraint_variables",

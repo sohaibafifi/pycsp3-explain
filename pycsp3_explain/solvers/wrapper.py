@@ -314,11 +314,12 @@ def _save_pycsp3_state() -> _PyCSP3State:
         compilation_stopwatch2=Compilation.stopwatch2,
         compilation_pathname=Compilation.pathname,
         compilation_filename=Compilation.filename,
-        aux_introduced=aux._introduced_variables,
-        aux_collected=aux._collected_constraints,
-        aux_raw=aux._collected_raw_constraints,
-        aux_ext=aux._collected_extension_constraints,
-        aux_cache=aux.cache,
+        # Copy mutable auxiliary lists to prevent aliasing across sessions.
+        aux_introduced=aux._introduced_variables[:],
+        aux_collected=aux._collected_constraints[:],
+        aux_raw=aux._collected_raw_constraints[:],
+        aux_ext=aux._collected_extension_constraints[:],
+        aux_cache=aux.cache[:],
         aux_cache_ints=aux.cache_ints.copy(),
         aux_cache_nodes=aux.cache_nodes.copy(),
     )

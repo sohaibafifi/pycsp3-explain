@@ -8,7 +8,16 @@ import os
 
 
 from pycsp3 import *
-from pycsp3_explain.explain.mus import mus, mus_naive, quickxplain, quickxplain_incremental, is_mus
+from pycsp3_explain.explain.mus import (
+    mus,
+    mus_naive,
+    mus_bicore,
+    mus_cpqx,
+    mus_bicore_qx,
+    quickxplain,
+    quickxplain_incremental,
+    is_mus,
+)
 from pycsp3_explain.solvers.wrapper import is_sat, is_unsat
 
 
@@ -332,6 +341,60 @@ class TestTopLevelApi:
         assert constraint_in_list(c1, result)
         assert is_mus(result, solver="ace", verbose=-1)
 
+    def test_top_level_mus_bicore_export(self):
+        """Test mus_bicore is exported at package top-level."""
+        clear()
+
+        from pycsp3_explain import mus_bicore as mus_bicore_top
+
+        x = VarArray(size=2, dom=range(10))
+        c0 = x[0] == 5
+        c1 = x[0] == 7
+        soft = [c0, c1]
+
+        result = mus_bicore_top(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_top_level_mus_cpqx_export(self):
+        """Test mus_cpqx is exported at package top-level."""
+        clear()
+
+        from pycsp3_explain import mus_cpqx as mus_cpqx_top
+
+        x = VarArray(size=2, dom=range(10))
+        c0 = x[0] == 5
+        c1 = x[0] == 7
+        soft = [c0, c1]
+
+        result = mus_cpqx_top(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_top_level_mus_bicore_qx_export(self):
+        """Test mus_bicore_qx is exported at package top-level."""
+        clear()
+
+        from pycsp3_explain import mus_bicore_qx as mus_bqx_top
+
+        x = VarArray(size=2, dom=range(10))
+        c0 = x[0] == 5
+        c1 = x[0] == 7
+        soft = [c0, c1]
+
+        result = mus_bqx_top(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
 
 class TestMusAssumptionBased:
     """Tests for assumption-based MUS algorithm."""
@@ -374,6 +437,211 @@ class TestMusAssumptionBased:
         assert len(mus_set) == 2
         assert constraint_in_list(c0, mus_set)
         assert constraint_in_list(c1, mus_set)
+
+
+class TestMusBiCore:
+    """Tests for BiCore MUS algorithm."""
+
+    def setup_method(self):
+        clear()
+
+    def test_bicore_simple_unsat(self):
+        """Test BiCore MUS on a simple unsatisfiable model."""
+        clear()
+
+        x = VarArray(size=3, dom=range(10))
+
+        c0 = x[0] == 5
+        c1 = x[1] >= 3
+        c2 = x[0] == 7
+
+        soft = [c0, c1, c2]
+        result = mus_bicore(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c2, result)
+        assert not constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_bicore_with_hard_constraints(self):
+        """Test BiCore MUS when one soft constraint conflicts with hard."""
+        clear()
+
+        x = VarArray(size=2, dom=range(10))
+
+        hard = [x[0] >= 5]
+        c0 = x[0] <= 3      # conflicts with hard
+        c1 = x[1] >= 0      # independent
+
+        soft = [c0, c1]
+        result = mus_bicore(soft, hard=hard, solver="ace", verbose=-1)
+
+        assert len(result) == 1
+        assert constraint_in_list(c0, result)
+        assert not constraint_in_list(c1, result)
+        assert is_mus(result, hard=hard, solver="ace", verbose=-1)
+
+
+class TestMusCpqx:
+    """Tests for Core-Projected QuickXplain MUS algorithm."""
+
+    def setup_method(self):
+        clear()
+
+    def test_cpqx_small_conflict(self):
+        """CPQX should be exact on tiny conflict instances."""
+        clear()
+
+        x = VarArray(size=2, dom=range(10))
+        c0 = x[0] == 5
+        c1 = x[0] == 7
+        soft = [c0, c1]
+
+        result = mus_cpqx(soft, solver="ace", verbose=-1)
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_cpqx_with_irrelevant_constraints(self):
+        """CPQX should still return a valid MUS when many soft constraints are irrelevant."""
+        clear()
+
+        x = VarArray(size=6, dom=range(10))
+        c0 = x[0] == 1
+        c1 = x[0] == 2
+        c2 = x[1] == 3
+        c3 = x[2] >= 2
+        c4 = x[2] <= 8
+        c5 = x[3] >= 1
+        c6 = x[4] <= 9
+        c7 = x[5] >= 0
+        soft = [c0, c1, c2, c3, c4, c5, c6, c7]
+
+        result = mus_cpqx(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+
+class TestMusBicoreQx:
+    """Tests for Hybrid BiCore-QuickXplain MUS algorithm."""
+
+    def setup_method(self):
+        clear()
+
+    def test_bicore_qx_simple_unsat(self):
+        """Test Hybrid BiCore-QX on a simple unsatisfiable model."""
+        clear()
+
+        x = VarArray(size=3, dom=range(10))
+        c0 = x[0] == 5
+        c1 = x[1] >= 3
+        c2 = x[0] == 7
+
+        soft = [c0, c1, c2]
+        result = mus_bicore_qx(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c2, result)
+        assert not constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_bicore_qx_with_hard_constraints(self):
+        """Test Hybrid BiCore-QX when one soft constraint conflicts with hard."""
+        clear()
+
+        x = VarArray(size=2, dom=range(10))
+        hard = [x[0] >= 5]
+        c0 = x[0] <= 3      # conflicts with hard
+        c1 = x[1] >= 0      # independent
+
+        soft = [c0, c1]
+        result = mus_bicore_qx(soft, hard=hard, solver="ace", verbose=-1)
+
+        assert len(result) == 1
+        assert constraint_in_list(c0, result)
+        assert not constraint_in_list(c1, result)
+        assert is_mus(result, hard=hard, solver="ace", verbose=-1)
+
+    def test_bicore_qx_many_irrelevant(self):
+        """Test Hybrid BiCore-QX with many irrelevant constraints (exercises Phase 1)."""
+        clear()
+
+        x = VarArray(size=10, dom=range(20))
+        c0 = x[0] == 1
+        c1 = x[0] == 2          # conflict pair
+        fillers = [
+            x[i] >= (i % 5) for i in range(1, 10)
+        ] + [
+            x[i] <= 19 - (i % 3) for i in range(1, 10)
+        ]
+        soft = [c0, c1] + fillers
+
+        result = mus_bicore_qx(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_bicore_qx_large_mus(self):
+        """Test Hybrid BiCore-QX when MUS is large relative to soft set."""
+        clear()
+
+        # Chain conflict: x[0] >= 5, x[0] <= 4 is the core 2-constraint MUS.
+        # Adding several more constraints that are independent should not
+        # affect the MUS.
+        x = VarArray(size=5, dom=range(10))
+        c0 = x[0] >= 5
+        c1 = x[0] <= 4       # conflicts with c0
+        c2 = x[1] >= 1
+        c3 = x[1] <= 9
+        c4 = x[2] >= 0
+        c5 = x[3] >= 2
+        c6 = x[4] <= 8
+
+        soft = [c0, c1, c2, c3, c4, c5, c6]
+        result = mus_bicore_qx(soft, solver="ace", verbose=-1)
+
+        assert len(result) == 2
+        assert constraint_in_list(c0, result)
+        assert constraint_in_list(c1, result)
+        assert is_mus(result, solver="ace", verbose=-1)
+
+    def test_bicore_qx_alldiff_collision(self):
+        """
+        Regression: mus_bicore_qx must not corrupt auxiliary state.
+
+        This case mirrors the benchmark alldiff_collision instance where
+        AllDifferent alone is UNSAT (5 vars over domain size 4).
+        """
+        clear()
+
+        x = VarArray(size=5, dom=range(4))
+        c0 = AllDifferent(x)
+        soft = [
+            c0,
+            x[0] == 0,
+            x[1] == 1,
+            x[2] == 2,
+            x[3] == 3,
+            x[4] == 0,
+            Sum(x) >= 0,
+        ]
+
+        # Use verbose=0 to mirror the benchmark execution path.
+        result = mus_bicore_qx(soft, solver="ace", verbose=0)
+
+        assert len(result) == 1
+        assert constraint_in_list(c0, result)
+        assert is_mus(result, solver="ace", verbose=0)
+        # Ensure the returned constraint can still be solved standalone.
+        assert is_unsat([c0], solver="ace", verbose=0)
 
 
 class TestIsMus:

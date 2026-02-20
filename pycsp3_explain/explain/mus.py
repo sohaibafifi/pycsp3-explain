@@ -4,6 +4,9 @@ MUS (Minimal Unsatisfiable Subset) algorithms for PyCSP3.
 This module provides implementations of:
 - mus: Assumption-based MUS using core extraction (ACE)
 - mus_naive: Deletion-based MUS using naive re-solving
+- mus_bicore: Core-guided + batched exact MUS shrinking
+- mus_cpqx: Core-projected QuickXplain (exact hybrid)
+- mus_bicore_qx: Hybrid BiCore bulk elimination + QuickXplain (exact)
 - quickxplain: Preferred MUS using QuickXplain with core extraction when possible
 - optimal_mus: Find optimal MUS according to weights
 - smus: Find smallest MUS
@@ -379,6 +382,393 @@ def mus(
             return mus_naive(soft, hard, solver, verbose)
 
     return [soft[i] for i in range(len(soft)) if i in core]
+
+
+def mus_bicore(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    solver: str = "ace",
+    verbose: int = -1
+) -> List[Any]:
+    """
+    Compute a MUS with core-guided batched shrinking.
+
+    The algorithm keeps one reusable assumption session and combines:
+    1. core compression (when available),
+    2. batched removals (group testing),
+    3. binary splitting of SAT batches,
+    4. final singleton certification for exact minimality.
+
+    This function is exact: returned subsets are MUSes (not heuristics).
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        raise ValueError("soft constraints cannot be empty")
+
+    n = len(soft)
+    use_core = solver.lower() == "ace"
+
+    def num_vars(i: int) -> int:
+        try:
+            return len(get_constraint_variables(soft[i]))
+        except Exception:
+            return 0
+
+    with _AssumptionSolveSession(
+        soft=soft,
+        hard=hard,
+        solver=solver,
+        verbose=verbose,
+        name_prefix="mus_bicore",
+    ) as session:
+        all_indices = list(range(n))
+        result, core = session.solve(all_indices, extract_core=use_core)
+
+        if result == SolveResult.SAT:
+            raise AssertionError("mus_bicore: model must be UNSAT")
+        if result != SolveResult.UNSAT:
+            if verbose >= 0:
+                print("mus_bicore: solver returned UNKNOWN/ERROR, using mus_naive")
+            return mus_naive(soft, hard, solver, verbose)
+
+        current: Set[int] = set(core) if (use_core and core) else set(all_indices)
+        locked: Set[int] = set()
+        batch_queue: List[Set[int]] = []
+
+        # Phase 1: batched shrinking with core compression.
+        while True:
+            batch: Optional[Set[int]] = None
+
+            while batch_queue and batch is None:
+                queued = batch_queue.pop()
+                queued = {i for i in queued if i in current and i not in locked}
+                if queued:
+                    batch = queued
+
+            if batch is None:
+                available = [i for i in sorted(current, key=num_vars, reverse=True) if i not in locked]
+                if not available:
+                    break
+                if len(available) == 1:
+                    batch = {available[0]}
+                else:
+                    batch_size = max(1, len(available) // 2)
+                    batch = set(available[:batch_size])
+
+            test = sorted(set(current) - batch)
+            result, core = session.solve(test, extract_core=use_core)
+
+            if result == SolveResult.UNSAT:
+                if use_core and core:
+                    refined = {i for i in core if i in test}
+                    current = refined if refined else set(test)
+                else:
+                    current = set(test)
+                locked &= current
+                continue
+
+            if result == SolveResult.SAT:
+                if len(batch) == 1:
+                    locked |= batch
+                    continue
+
+                ordered_batch = sorted(batch, key=num_vars, reverse=True)
+                split = len(ordered_batch) // 2
+                left = set(ordered_batch[:split])
+                right = set(ordered_batch[split:])
+                if left:
+                    batch_queue.append(left)
+                if right:
+                    batch_queue.append(right)
+                continue
+
+            if verbose >= 0:
+                print("mus_bicore: solver returned UNKNOWN/ERROR, using mus_naive")
+            return mus_naive(soft, hard, solver, verbose)
+
+        # Phase 2: exact singleton certification.
+        changed = True
+        while changed:
+            changed = False
+            for idx in sorted(current, key=num_vars, reverse=True):
+                test = sorted(set(current) - {idx})
+                result, core = session.solve(test, extract_core=use_core)
+
+                if result == SolveResult.UNSAT:
+                    if use_core and core:
+                        refined = {i for i in core if i in test}
+                        current = refined if refined else set(test)
+                    else:
+                        current = set(test)
+                    locked.discard(idx)
+                    locked &= current
+                    changed = True
+                    break
+
+                if result == SolveResult.SAT:
+                    locked.add(idx)
+                    continue
+
+                if verbose >= 0:
+                    print("mus_bicore: solver returned UNKNOWN/ERROR, using mus_naive")
+                return mus_naive(soft, hard, solver, verbose)
+
+        return [soft[i] for i in sorted(current)]
+
+
+def mus_cpqx(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    solver: str = "ace",
+    verbose: int = -1
+) -> List[Any]:
+    """
+    Compute a MUS with Core-Projected QuickXplain (CPQX).
+
+    Strategy:
+    1. For tiny soft sets, run QuickXplain directly (lower overhead).
+    2. For larger sets with ACE, extract one UNSAT core.
+    3. Run QuickXplain on the projected core subset only.
+
+    The method is exact: output is a MUS of the original problem.
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        raise ValueError("soft constraints cannot be empty")
+
+    # For small instances, core pre-pass overhead is usually not worth it.
+    if len(soft) < 6 or solver.lower() != "ace":
+        return quickxplain(soft, hard, solver, verbose)
+
+    result, core_raw = solve_subset_with_core(soft, hard, solver, verbose)
+    assert result == SolveResult.UNSAT, "mus_cpqx: model must be UNSAT"
+
+    if not core_raw:
+        return quickxplain(soft, hard, solver, verbose)
+
+    hard_offset = len(hard)
+    core_indices = sorted({
+        i - hard_offset
+        for i in core_raw
+        if i >= hard_offset and (i - hard_offset) < len(soft)
+    })
+    if not core_indices or len(core_indices) >= len(soft):
+        return quickxplain(soft, hard, solver, verbose)
+
+    reduced_soft = [soft[i] for i in core_indices]
+    return quickxplain(reduced_soft, hard, solver, verbose)
+
+
+def mus_bicore_qx(
+    soft: List[Any],
+    hard: Optional[List[Any]] = None,
+    solver: str = "ace",
+    verbose: int = -1,
+    handoff_threshold: Optional[int] = None,
+) -> List[Any]:
+    """
+    Compute a MUS with Hybrid BiCore-QuickXplain.
+
+    This algorithm combines two complementary strategies within a single
+    reusable assumption session:
+
+    **Phase 1 — BiCore bulk elimination:**
+    Removes large batches of constraints at once (group testing). When a
+    batch removal leaves the problem UNSAT the batch is discarded; when SAT
+    the batch is binary-split and re-queued. Adaptive batch sizing uses
+    exponential backoff: the batch shrinks after consecutive SAT results
+    and grows after UNSAT results, tuning itself to the MUS density.
+    Core compression at every UNSAT step continuously narrows the working set.
+
+    **Phase 2 — Incremental QuickXplain on residual:**
+    Once the working set is small enough (|unlocked| ≤ *handoff_threshold*),
+    the algorithm switches to a full QuickXplain recursion operating on
+    assumption indices. QuickXplain provides exact minimality with
+    O(k · log(m/k)) solver calls where m is the residual size and k the
+    final MUS size.
+
+    The algorithm is **exact**: the returned subset is a MUS.
+
+    :param soft: List of soft constraints (candidates for MUS)
+    :param hard: List of hard constraints (always included, not in MUS)
+    :param solver: Solver name ("ace" or "choco")
+    :param verbose: Verbosity level (-1 for silent)
+    :param handoff_threshold: Size of unlocked working set at which Phase 1
+        switches to QuickXplain (Phase 2). Default: max(8, n // 3).
+    :return: A minimal unsatisfiable subset of soft constraints
+    :raises ValueError: If soft is empty
+    :raises AssertionError: If soft + hard is satisfiable
+
+    Complexity:
+        Phase 1 best case: O(log(n/k)) solver calls to reduce n → ≈ k.
+        Phase 2 worst case: O(k · log(m/k)) calls for exact minimality.
+        Combined: often significantly fewer calls than pure deletion or
+        pure QuickXplain on instances with large n and small k.
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        raise ValueError("soft constraints cannot be empty")
+
+    n = len(soft)
+    use_core = solver.lower() == "ace"
+
+    if handoff_threshold is None:
+        handoff_threshold = max(8, n // 3)
+
+    def num_vars(i: int) -> int:
+        try:
+            return len(get_constraint_variables(soft[i]))
+        except Exception:
+            return 0
+
+    with _AssumptionSolveSession(
+        soft=soft,
+        hard=hard,
+        solver=solver,
+        verbose=verbose,
+        name_prefix="mus_bqx",
+    ) as session:
+        solve_calls = [0]
+
+        def _solve(indices: List[int], extract: bool = False):
+            solve_calls[0] += 1
+            return session.solve(indices, extract_core=extract)
+
+        # ── verify UNSAT and seed with core ──
+        all_indices = list(range(n))
+        result, core = _solve(all_indices, extract=use_core)
+
+        if result == SolveResult.SAT:
+            raise AssertionError("mus_bicore_qx: model must be UNSAT")
+        if result != SolveResult.UNSAT:
+            if verbose >= 0:
+                print("mus_bicore_qx: solver returned UNKNOWN/ERROR, using mus_naive")
+            return mus_naive(soft, hard, solver, verbose)
+
+        current: Set[int] = set(core) if (use_core and core) else set(all_indices)
+        locked: Set[int] = set()
+
+        # ── Phase 1: BiCore bulk elimination ──
+        batch_queue: List[Set[int]] = []
+        # Adaptive batch sizing state
+        consecutive_sat = 0
+        base_ratio = 2  # start: remove half
+
+        while True:
+            unlocked_count = len(current) - len(locked & current)
+            if unlocked_count <= handoff_threshold:
+                break
+
+            # Pick next batch
+            batch: Optional[Set[int]] = None
+
+            while batch_queue and batch is None:
+                queued = batch_queue.pop()
+                queued = {i for i in queued if i in current and i not in locked}
+                if queued:
+                    batch = queued
+
+            if batch is None:
+                available = [
+                    i for i in sorted(current, key=num_vars, reverse=True)
+                    if i not in locked
+                ]
+                if not available:
+                    break
+                # Adaptive: grow divisor after SAT (smaller batches),
+                # reset after UNSAT (larger batches)
+                divisor = min(base_ratio * (2 ** consecutive_sat), len(available))
+                batch_size = max(1, len(available) // divisor)
+                batch = set(available[:batch_size])
+
+            test = sorted(set(current) - batch)
+            result, core = _solve(test, extract=use_core)
+
+            if result == SolveResult.UNSAT:
+                consecutive_sat = 0
+                if use_core and core:
+                    refined = {i for i in core if i in test}
+                    current = refined if refined else set(test)
+                else:
+                    current = set(test)
+                locked &= current
+                if verbose >= 0:
+                    print(f"  [phase1] UNSAT: dropped {len(batch)} → "
+                          f"|current|={len(current)}, |locked|={len(locked & current)}")
+                continue
+
+            if result == SolveResult.SAT:
+                consecutive_sat += 1
+                if len(batch) == 1:
+                    locked |= batch
+                    continue
+                # Binary-split and re-queue
+                ordered_batch = sorted(batch, key=num_vars, reverse=True)
+                split = len(ordered_batch) // 2
+                left = set(ordered_batch[:split])
+                right = set(ordered_batch[split:])
+                if left:
+                    batch_queue.append(left)
+                if right:
+                    batch_queue.append(right)
+                continue
+
+            # UNKNOWN/ERROR
+            if verbose >= 0:
+                print("mus_bicore_qx: solver returned UNKNOWN/ERROR, using mus_naive")
+            return mus_naive(soft, hard, solver, verbose)
+
+        # ── Phase 2: incremental QuickXplain on residual ──
+        residual = sorted(current)
+
+        if verbose >= 0:
+            print(f"  [handoff] Phase1→QX: |residual|={len(residual)}, "
+                  f"|locked|={len(locked & current)}, calls_so_far={solve_calls[0]}")
+
+        def qx_solve(enabled: List[int]) -> bool:
+            """Check UNSAT under the given assumption indices."""
+            result, _ = _solve(enabled, extract=False)
+            return result == SolveResult.UNSAT
+
+        def qx_recursive(
+            soft_idx: List[int],
+            hard_idx: List[int],
+            delta: List[int],
+        ) -> List[int]:
+            if delta:
+                if qx_solve(hard_idx):
+                    return []
+            if len(soft_idx) == 1:
+                return list(soft_idx)
+
+            split = len(soft_idx) // 2
+            more_preferred = soft_idx[:split]
+            less_preferred = soft_idx[split:]
+
+            delta2 = qx_recursive(
+                less_preferred,
+                hard_idx + more_preferred,
+                more_preferred,
+            )
+            delta1 = qx_recursive(
+                more_preferred,
+                hard_idx + delta2,
+                delta2,
+            )
+            return delta1 + delta2
+
+        mus_indices = qx_recursive(residual, [], [])
+
+        if verbose >= 0:
+            print(f"  [done] |MUS|={len(mus_indices)}, total_calls={solve_calls[0]}")
+
+        return [soft[i] for i in mus_indices]
 
 
 def quickxplain(

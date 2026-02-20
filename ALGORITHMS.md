@@ -38,6 +38,9 @@ In this repository:
 |---|---|---|---|
 | `mus_naive` | MUS | Deletion-based | Complete, returns MUS |
 | `mus` | MUS | Assumption/core-guided deletion | Complete, returns MUS |
+| `mus_bicore` | MUS | Core-guided batched shrinking | Complete, returns MUS |
+| `mus_cpqx` | MUS | Core-projected QuickXplain | Complete, returns MUS |
+| `mus_bicore_qx` | MUS | Hybrid BiCore + QuickXplain | Complete, returns MUS |
 | `quickxplain` | Preferred MUS | QuickXplain divide-and-conquer | Complete for preferred MUS semantics |
 | `quickxplain_incremental` | Preferred MUS | QuickXplain + reusable assumption session | Same result class as `quickxplain` |
 | `all_mus_naive` | MUS enumeration | Multi-start naive search | Finds valid MUSes; not complete by proof |
@@ -54,8 +57,10 @@ In this repository:
 | `mcs_opt` | Weighted MCS | Complement of exact weighted MSS | Optimal for induced objective |
 | `mcs_heuristic` | Weighted MCS | Complement of greedy weighted MSS | Approximate |
 | `marco` | MUS/MCS enumeration | MARCO + map solver | Complete MUS/MCS enumeration |
+| `marco_core` | MUS/MCS enumeration | MARCO + core-intersection + BiCore/QX shrink | Complete MUS/MCS enumeration |
 | `marco_naive` | MUS/MCS enumeration | Naive exploration | Baseline, slower |
 | `all_mus`, `all_mcs` | Enumeration wrappers | MARCO wrappers | Complete via `marco` |
+| `all_mus_core`, `all_mcs_core` | Enumeration wrappers | MARCO-core wrappers | Complete via `marco_core` |
 
 ## 3. MUS Algorithms
 
@@ -76,7 +81,51 @@ UNSAT cores over assumptions localize conflicting constraints and reduce unneces
 
 The method is still oracle-based but typically more efficient than pure naive deletion when core extraction is available.
 
-### 3.3 `quickxplain`: preferred MUS extraction
+### 3.3 `mus_bicore`: core-guided batched shrinking
+
+`mus_bicore` combines four ingredients:
+1. Start from an UNSAT core when available.
+2. Remove batches of constraints at once (group testing).
+3. If a batch removal is SAT, split the batch and recurse.
+4. Finish with singleton checks to certify exact minimality.
+
+Compared to plain deletion, this can eliminate many non-critical constraints with fewer oracle calls on structured instances.
+
+### 3.4 `mus_cpqx`: core-projected QuickXplain
+
+`mus_cpqx` is a hybrid:
+1. for tiny instances, run QuickXplain directly;
+2. for larger instances, extract one UNSAT core first;
+3. run QuickXplain only on that projected core.
+
+This preserves exactness while often reducing search width on instances with small cores.
+
+### 3.5 `mus_bicore_qx`: hybrid BiCore-QuickXplain
+
+`mus_bicore_qx` is a two-phase hybrid that combines bulk-elimination power
+with optimal recursive minimality:
+
+**Phase 1 — BiCore bulk elimination:**
+1. Seed the working set from an UNSAT core (when available).
+2. Remove batches of constraints at once (group testing).
+3. If the batch is removable (UNSAT), discard it with core compression.
+4. If not (SAT), binary-split the batch and re-queue.
+5. Adaptive batch sizing: exponential backoff after consecutive SAT results,
+   reset after UNSAT, tuning itself to the MUS density.
+
+**Phase 2 — Incremental QuickXplain on residual:**
+6. When the unlocked working set is small enough (≤ handoff threshold),
+   switch to QuickXplain divide-and-conquer recursion.
+7. QX provides exact minimality with O(k · log(m/k)) solver calls
+   where m is the residual size and k the final MUS size.
+
+Both phases share a single `_AssumptionSolveSession`, avoiding model
+rebuild overhead. The handoff threshold defaults to `max(8, n // 3)`.
+
+Combined complexity: Phase 1 best-case O(log(n/k)) calls for bulk
+reduction; Phase 2 worst-case O(k · log(m/k)) calls for exact shrinking.
+
+### 3.6 `quickxplain`: preferred MUS extraction
 
 QuickXplain (Junker, 2004) recursively partitions constraints:
 - It computes a conflict relative to preference order.
@@ -84,7 +133,7 @@ QuickXplain (Junker, 2004) recursively partitions constraints:
 
 This is not a global weight optimizer; it is a **preference-ordered MUS extractor**.
 
-### 3.4 `quickxplain_incremental`
+### 3.7 `quickxplain_incremental`
 
 Same recursive QuickXplain logic, but with a reusable assumption session:
 - hard + guard constraints are posted once,
@@ -179,6 +228,21 @@ Complete for MUS/MCS enumeration under terminating map-search exploration.
 
 Simpler baseline enumeration strategy without the full map-solver efficiency.
 Useful as reference behavior; typically slower.
+
+### 6.3 `marco_core`
+
+`marco_core` keeps MARCO completeness while adding three UNSAT-side accelerations:
+
+1. **Core intersection tracking**: maintain `I = ⋂ core_t` over observed UNSAT cores and
+   treat `I` as high-priority locked constraints during batched shrinking.
+2. **Seed pre-shrinking**: when a new UNSAT seed contains an already discovered MUS,
+   initialize shrinking from that MUS plus fresh core information.
+3. **BiCore-QX shrinking**:
+   - Phase 1: adaptive batched removals (group testing with split-on-SAT),
+   - Phase 2: QuickXplain recursion on the reduced residual.
+
+Like `marco`, it uses one reusable assumption session for all subset checks.
+The method is exact: final MUS candidates are certified with a minimality pass.
 
 ## 7. Verification Predicates
 

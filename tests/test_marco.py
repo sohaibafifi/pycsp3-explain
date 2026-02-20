@@ -6,9 +6,12 @@ import pytest
 from pycsp3 import *
 from pycsp3_explain.explain.marco import (
     marco,
+    marco_core,
     marco_naive,
     all_mus,
+    all_mus_core,
     all_mcs,
+    all_mcs_core,
     MapSolver,
 )
 from pycsp3_explain.explain.mus import is_mus
@@ -220,6 +223,79 @@ class TestMarcoNaive:
 
         assert len(muses) == 1
         assert len(mcses) == 2
+
+
+class TestMarcoCore:
+    """Tests for core-informed MARCO implementation."""
+
+    def setup_method(self):
+        """Clear PyCSP3 state before each test."""
+        clear()
+
+    def test_simple_conflict_enumerate(self):
+        """Test marco_core on a simple pair conflict."""
+        clear()
+
+        x = Var(dom=range(10))
+        soft = [x == 5, x == 7]
+
+        results = list(marco_core(soft, solver="ace", verbose=-1))
+        muses = [s for t, s in results if t == "MUS"]
+        mcses = [s for t, s in results if t == "MCS"]
+
+        assert len(muses) == 1
+        assert len(muses[0]) == 2
+        assert len(mcses) == 2
+        assert all(len(mcs) == 1 for mcs in mcses)
+
+    def test_wrappers(self):
+        """Test all_mus_core/all_mcs_core wrappers."""
+        clear()
+
+        x = Var(dom=range(10))
+        soft = [x == 5, x == 7]
+
+        muses = all_mus_core(soft, solver="ace", verbose=-1)
+        mcses = all_mcs_core(soft, solver="ace", verbose=-1)
+
+        assert len(muses) == 1
+        assert len(muses[0]) == 2
+        assert len(mcses) == 2
+        assert all(len(mcs) == 1 for mcs in mcses)
+
+    def test_results_are_valid(self):
+        """Validate MUS/MCS results from marco_core."""
+        clear()
+
+        x = Var(dom=range(10))
+        c0 = x == 1
+        c1 = x == 2
+        c2 = x == 3
+        soft = [c0, c1, c2]
+
+        seen_mus = 0
+        seen_mcs = 0
+        for result_type, subset in marco_core(soft, solver="ace", verbose=-1):
+            if result_type == "MUS":
+                seen_mus += 1
+                assert is_mus(subset, solver="ace", verbose=-1)
+            if result_type == "MCS":
+                seen_mcs += 1
+                assert is_mcs(subset, soft, solver="ace", verbose=-1)
+
+        assert seen_mus >= 1
+        assert seen_mcs >= 1
+
+    def test_top_level_exports(self):
+        """Test marco_core wrappers are exported at package top-level."""
+        clear()
+        from pycsp3_explain import marco_core as marco_core_top
+        from pycsp3_explain import all_mus_core as all_mus_core_top
+        from pycsp3_explain import all_mcs_core as all_mcs_core_top
+
+        assert marco_core_top is not None
+        assert all_mus_core_top is not None
+        assert all_mcs_core_top is not None
 
 
 class TestMarcoWithHard:

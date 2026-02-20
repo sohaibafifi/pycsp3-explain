@@ -9,6 +9,9 @@ Algorithmic descriptions are documented in [ALGORITHMS.md](ALGORITHMS.md).
 - **MUS (Minimal Unsatisfiable Subset)**: Find the minimal set of conflicting constraints
   - `mus()` - Assumption-based using ACE core extraction
   - `mus_naive()` - Deletion-based (works with any solver)
+  - `mus_bicore()` - Core-guided batched exact MUS shrinking
+  - `mus_cpqx()` - Core-Projected QuickXplain (exact hybrid)
+  - `mus_bicore_qx()` - Hybrid BiCore bulk elimination + QuickXplain (exact)
   - `quickxplain()` - Preferred MUS using QuickXplain (Junker, 2004)
 - **Optimal MUS (SMUS/OCUS)**: Prefer smaller or lower-weight explanations
   - `smus()` - Smallest MUS (fewest constraints)
@@ -30,8 +33,10 @@ Algorithmic descriptions are documented in [ALGORITHMS.md](ALGORITHMS.md).
   - `mcs_naive()` - Via naive MSS complement
 - **MARCO**: Enumerate all MUSes and MCSes
   - `marco()` - Generator over MUS/MCS
+  - `marco_core()` - Core-informed MARCO (core intersection + BiCore/QX shrink)
   - `marco_naive()` - Naive MARCO implementation
   - `all_mus()` / `all_mcs()` - Convenience wrappers
+  - `all_mus_core()` / `all_mcs_core()` - `marco_core()` convenience wrappers
   - `all_mus_naive()` - Naive MUS enumeration
 
 ## Installation
@@ -116,6 +121,9 @@ Given an infeasible constraint satisfaction problem (CSP), explanation tools hel
 ### MUS Functions
 - `mus(soft, hard=None, solver="ace")` - Assumption-based MUS
 - `mus_naive(soft, hard=None, solver="ace")` - Deletion-based MUS
+- `mus_bicore(soft, hard=None, solver="ace")` - Core-guided batched exact MUS
+- `mus_cpqx(soft, hard=None, solver="ace")` - Core-Projected QuickXplain (exact hybrid)
+- `mus_bicore_qx(soft, hard=None, solver="ace")` - Hybrid BiCore + QuickXplain (exact)
 - `quickxplain(soft, hard=None, solver="ace")` - Assumption-based preferred MUS (Junker, 2004)
 - `is_mus(subset, hard=None, solver="ace")` - Verify MUS validity
 - `all_mus_naive(soft, hard=None, solver="ace")` - Enumerate MUSes (naive)
@@ -141,9 +149,34 @@ Given an infeasible constraint satisfaction problem (CSP), explanation tools hel
 
 ### MARCO Enumeration
 - `marco(soft, hard=None, solver="ace")` - Generator over MUS/MCS
+- `marco_core(soft, hard=None, solver="ace")` - Core-informed MARCO generator
 - `marco_naive(soft, hard=None, solver="ace")` - Naive MARCO
 - `all_mus(soft, hard=None, solver="ace")` - Collect all MUSes
 - `all_mcs(soft, hard=None, solver="ace")` - Collect all MCSes
+- `all_mus_core(soft, hard=None, solver="ace")` - Collect all MUSes via `marco_core`
+- `all_mcs_core(soft, hard=None, solver="ace")` - Collect all MCSes via `marco_core`
+
+### Benchmark Scripts
+
+- Script: `benchmarks/bench_mus_methods.py`
+- Compare: `mus_naive`, `mus`, `mus_bicore`, `mus_bicore_qx`, `mus_cpqx`, `quickxplain`, `quickxplain_incremental`
+- Script: `benchmarks/bench_marco_methods.py`
+- Compare: `marco_naive`, `marco`, `marco_core`
+
+Examples:
+
+```bash
+uv run python benchmarks/bench_mus_methods.py
+uv run python benchmarks/bench_mus_methods.py --repeats 11 --warmup 1
+uv run python benchmarks/bench_mus_methods.py --verbose
+uv run python benchmarks/bench_mus_methods.py --method-verbose 0
+uv run python benchmarks/bench_mus_methods.py --output-csv benchmarks/mus_runs.csv
+uv run python benchmarks/bench_marco_methods.py
+uv run python benchmarks/bench_marco_methods.py --repeats 7 --warmup 1
+uv run python benchmarks/bench_marco_methods.py --output-csv benchmarks/marco_runs.csv
+uv run python benchmarks/bench_marco_methods.py --cases large_irrelevant_pair_80,two_conflicts_irrelevant_60,alldiff_dense_core_24
+uv run python benchmarks/bench_marco_methods.py --core-handoff 4 --core-base-ratio 1 --core-backoff-cap 8
+```
 
 ## License
 

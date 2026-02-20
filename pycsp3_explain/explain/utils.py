@@ -250,6 +250,9 @@ def explain_unsat(
         from pycsp3_explain.explain.mus import (
             mus,
             mus_naive,
+            mus_bicore,
+            mus_cpqx,
+            mus_bicore_qx,
             quickxplain,
             quickxplain_incremental,
             optimal_mus,
@@ -271,14 +274,20 @@ def explain_unsat(
         )
         from pycsp3_explain.explain.marco import (
             marco,
+            marco_core,
             marco_naive,
             all_mus,
+            all_mus_core,
             all_mcs,
+            all_mcs_core,
         )
 
         algo_map = {
             "mus": mus,
             "mus_naive": mus_naive,
+            "mus_bicore": mus_bicore,
+            "mus_cpqx": mus_cpqx,
+            "mus_bicore_qx": mus_bicore_qx,
             "quickxplain": quickxplain,
             "quickxplain_incremental": quickxplain_incremental,
             "optimal_mus": optimal_mus,
@@ -296,9 +305,12 @@ def explain_unsat(
             "mcs_opt": mcs_opt,
             "mcs_heuristic": mcs_heuristic,
             "marco": marco,
+            "marco_core": marco_core,
             "marco_naive": marco_naive,
             "all_mus": all_mus,
+            "all_mus_core": all_mus_core,
             "all_mcs": all_mcs,
+            "all_mcs_core": all_mcs_core,
         }
 
         if key not in algo_map:

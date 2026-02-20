@@ -52,6 +52,7 @@ from pycsp3_explain.solvers.wrapper import (
     is_unsat,
     solve_subset,
     solve_subset_with_core,
+    _AssumptionSolveSession,
 )
 
 # Default maximum iterations for MARCO enumeration to prevent infinite loops
@@ -255,20 +256,18 @@ def marco(
     """
     Enumerate all MUSes and MCSes using the MARCO algorithm.
 
-    This is a generator that yields tuples of ("MUS", subset) or ("MCS", subset)
-    as they are discovered. The enumeration is complete when the generator is
-    exhausted.
+    This implementation uses a single reusable assumption session across all
+    iterations, and leverages core extraction for efficient MUS shrinking
+    (core-guided deletion with clause-set refinement).
 
     Algorithm (Liffiton et al., 2016):
     1. Use a "map solver" (SAT-based) to generate candidate subsets (seeds)
     2. For each seed:
-       - If SAT: grow to MSS, compute MCS = complement, block down (subsets)
-       - If UNSAT: shrink to MUS, block up (supersets)
+       - If SAT: grow to MSS via assumption-based incremental solving,
+         compute MCS = complement, block down (subsets)
+       - If UNSAT: extract core, shrink to MUS via core-guided deletion
+         with clause-set refinement, block up (supersets)
     3. Repeat until map solver returns UNSAT (no more unexplored subsets)
-
-    The map solver uses blocking clauses to ensure:
-    - No superset of a discovered MUS is generated (all would be UNSAT)
-    - No subset of a discovered MSS is generated (all would be SAT)
 
     :param soft: List of soft constraints to enumerate MUSes/MCSes of
     :param hard: List of hard constraints (always included, not in MUS/MCS)
@@ -278,13 +277,6 @@ def marco(
     :param verbose: Verbosity level (-1 for silent)
     :param max_iterations: Maximum iterations before stopping (safety limit)
     :yields: Tuples of ("MUS", subset) or ("MCS", subset)
-
-    Example:
-        >>> for result_type, subset in marco(soft_constraints, hard_constraints):
-        ...     if result_type == "MUS":
-        ...         print(f"Found MUS with {len(subset)} constraints")
-        ...     else:
-        ...         print(f"Found MCS with {len(subset)} constraints")
     """
     soft = flatten_constraints(soft)
     hard = flatten_constraints(hard) if hard else []
@@ -293,101 +285,154 @@ def marco(
         return
 
     n = len(soft)
+    use_core = solver.lower() == "ace"
 
     # Initialize map solver for tracking explored subsets
     map_solver = MapSolver(n)
 
-    def is_sat_subset(indices: Set[int]) -> bool:
-        """Check if the subset of soft constraints is SAT."""
-        subset = [soft[i] for i in indices]
-        return is_sat(subset, hard, solver, verbose)
+    # Heuristic ordering for shrinking: remove high-arity constraints first
+    def num_vars(i: int) -> int:
+        try:
+            return len(get_constraint_variables(soft[i]))
+        except (AttributeError, TypeError, ValueError):
+            return 0
 
-    def shrink_to_mus(seed_indices: Set[int]) -> Set[int]:
-        """
-        Shrink an UNSAT seed to a MUS using deletion-based algorithm.
+    deletion_order = {i: -num_vars(i) for i in range(n)}
 
-        Iteratively removes constraints and checks if still UNSAT.
-        If removing a constraint makes it SAT, that constraint is necessary.
-        """
-        mus = set(seed_indices)
+    with _AssumptionSolveSession(
+        soft=soft,
+        hard=hard,
+        solver=solver,
+        verbose=verbose,
+        name_prefix="marco_s",
+    ) as session:
 
-        # Sort by number of variables (more vars first -> remove first)
-        # This heuristic often leads to faster shrinking
-        def num_vars(i: int) -> int:
-            try:
-                return len(get_constraint_variables(soft[i]))
-            except (AttributeError, TypeError, ValueError):
-                return 0
+        def solve_seed(
+            indices: List[int],
+            want_core: bool = False,
+        ) -> Tuple[SolveResult, Optional[List[int]]]:
+            """
+            Two-step solve:
+            1) SAT/UNSAT probe without extraction (more stable on SAT),
+            2) optional UNSAT core extraction only when needed.
+            """
+            result, _ = session.solve(indices, extract_core=False)
+            if want_core and use_core and result == SolveResult.UNSAT:
+                _, core = session.solve(indices, extract_core=True)
+                return result, core
+            return result, None
 
-        ordered = sorted(mus, key=num_vars, reverse=True)
+        def shrink_to_mus(seed_indices: Set[int], initial_core: Optional[Set[int]]) -> Set[int]:
+            """
+            Shrink an UNSAT seed to a MUS using core-guided deletion
+            with clause-set refinement (matching CPMpy's approach).
 
-        for idx in ordered:
-            if idx not in mus:
-                continue
-            mus.remove(idx)
-            if not mus or is_sat_subset(mus):
-                # Constraint is necessary for UNSAT
-                mus.add(idx)
+            When the solver returns UNSAT after removing a constraint,
+            the new core replaces the working set — often dramatically
+            reducing the number of deletion tests needed.
+            """
+            # Start from the core if available (smaller than the full seed)
+            if initial_core:
+                mus_set = set(initial_core) & seed_indices
+                if not mus_set:
+                    mus_set = set(seed_indices)
+            else:
+                mus_set = set(seed_indices)
 
-        return mus
+            ordered = sorted(mus_set, key=lambda i: deletion_order.get(i, 0))
 
-    def grow_to_mss(seed_indices: Set[int]) -> Set[int]:
-        """
-        Grow a SAT seed to an MSS by adding constraints greedily.
+            for idx in ordered:
+                if idx not in mus_set:
+                    continue
+                mus_set.remove(idx)
+                if not mus_set:
+                    mus_set.add(idx)
+                    continue
 
-        Tries to add each constraint not in seed; keeps it if result is still SAT.
-        """
-        mss = set(seed_indices)
+                result, core = solve_seed(sorted(mus_set), want_core=use_core)
 
-        for i in range(n):
-            if i in mss:
-                continue
-            if is_sat_subset(mss | {i}):
-                mss.add(i)
+                if result == SolveResult.SAT:
+                    # Constraint is necessary for UNSAT — restore it
+                    mus_set.add(idx)
+                elif result == SolveResult.UNSAT:
+                    # Still UNSAT — refine working set from new core
+                    if use_core and core:
+                        refined = set(core) & mus_set
+                        if refined:
+                            mus_set = refined
+                    # idx stays removed
+                else:
+                    # UNKNOWN/ERROR — be safe, restore
+                    mus_set.add(idx)
 
-        return mss
+            return mus_set
 
-    # Main MARCO loop
-    iteration = 0
+        def grow_to_mss(seed_indices: Set[int]) -> Set[int]:
+            """
+            Grow a SAT seed to an MSS using assumption-based incremental solving.
+            """
+            mss_set = set(seed_indices)
 
-    while iteration < max_iterations:
-        iteration += 1
+            for i in range(n):
+                if i in mss_set:
+                    continue
+                test = sorted(mss_set | {i})
+                result, _ = solve_seed(test, want_core=False)
+                if result == SolveResult.SAT:
+                    mss_set.add(i)
 
-        # Get next unexplored seed from map solver
-        seed_set = map_solver.solve()
-        if seed_set is None:
-            # No more unexplored subsets - enumeration complete
+            return mss_set
+
+        # Main MARCO loop
+        iteration = 0
+
+        while iteration < max_iterations:
+            iteration += 1
+
+            # Get next unexplored seed from map solver
+            seed_set = map_solver.solve()
+            if seed_set is None:
+                if verbose >= 0:
+                    print(f"MARCO: enumeration complete after {iteration - 1} iterations")
+                break
+
             if verbose >= 0:
-                print(f"MARCO: enumeration complete after {iteration - 1} iterations")
-            break
+                print(f"MARCO: iteration {iteration}, seed size {len(seed_set)}")
 
-        if verbose >= 0:
-            print(f"MARCO: iteration {iteration}, seed size {len(seed_set)}")
+            result, core = solve_seed(sorted(seed_set), want_core=use_core)
 
-        if is_sat_subset(seed_set):
-            # SAT: grow to MSS, block down (subsets)
-            mss_set = grow_to_mss(seed_set)
-            map_solver.block_down(mss_set)
+            if result == SolveResult.SAT:
+                # SAT: grow to MSS, block down (subsets)
+                mss_set = grow_to_mss(seed_set)
+                map_solver.block_down(mss_set)
 
-            # MCS = complement of MSS
-            mcs_set = set(range(n)) - mss_set
+                # MCS = complement of MSS
+                mcs_set = set(range(n)) - mss_set
 
-            if verbose >= 0:
-                print(f"MARCO: found MSS of size {len(mss_set)}, MCS of size {len(mcs_set)}")
+                if verbose >= 0:
+                    print(f"MARCO: found MSS of size {len(mss_set)}, MCS of size {len(mcs_set)}")
 
-            if return_mcs and mcs_set:
-                yield ("MCS", [soft[i] for i in sorted(mcs_set)])
+                if return_mcs and mcs_set:
+                    yield ("MCS", [soft[i] for i in sorted(mcs_set)])
 
-        else:
-            # UNSAT: shrink to MUS, block up (supersets)
-            mus_set = shrink_to_mus(seed_set)
-            map_solver.block_up(mus_set)
+            elif result == SolveResult.UNSAT:
+                # UNSAT: shrink to MUS using core-guided deletion
+                core_set = set(core) if (use_core and core) else None
+                mus_set = shrink_to_mus(seed_set, core_set)
+                map_solver.block_up(mus_set)
 
-            if verbose >= 0:
-                print(f"MARCO: found MUS of size {len(mus_set)}")
+                if verbose >= 0:
+                    print(f"MARCO: found MUS of size {len(mus_set)}")
 
-            if return_mus and mus_set:
-                yield ("MUS", [soft[i] for i in sorted(mus_set)])
+                if return_mus and mus_set:
+                    yield ("MUS", [soft[i] for i in sorted(mus_set)])
+
+            else:
+                # UNKNOWN/ERROR — treat as SAT (grow side) to avoid infinite loop
+                if verbose >= 0:
+                    print(f"MARCO: solver returned UNKNOWN/ERROR, skipping seed")
+                mss_set = grow_to_mss(seed_set)
+                map_solver.block_down(mss_set)
 
 
 def marco_naive(
@@ -575,6 +620,353 @@ def marco_naive(
                 yield ("MUS", [soft[i] for i in sorted(mus_set)])
 
 
+def marco_core(
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
+    solver: str = "ace",
+    return_mus: bool = True,
+    return_mcs: bool = True,
+    verbose: int = -1,
+    max_iterations: int = DEFAULT_MAX_MARCO_ITERATIONS,
+    handoff_threshold: Optional[int] = None,
+    batch_base_ratio: int = 2,
+    sat_backoff_cap: int = 8,
+) -> Iterator[Tuple[Literal["MUS", "MCS"], ConstraintList]]:
+    """
+    Enumerate all MUSes and MCSes with core-informed MARCO.
+
+    This variant extends `marco()` with three extra accelerations:
+    1) core intersection tracking across UNSAT seeds,
+    2) seed pre-shrinking when a seed contains a known MUS,
+    3) BiCore-QX shrinking (batched elimination + QuickXplain handoff).
+    """
+    soft = flatten_constraints(soft)
+    hard = flatten_constraints(hard) if hard else []
+
+    if not soft:
+        return
+
+    n = len(soft)
+    use_core = solver.lower() == "ace"
+
+    if handoff_threshold is None:
+        handoff_threshold = max(8, n // 3)
+    if handoff_threshold < 1:
+        raise ValueError("handoff_threshold must be >= 1")
+    if batch_base_ratio < 1:
+        raise ValueError("batch_base_ratio must be >= 1")
+    if sat_backoff_cap < 0:
+        raise ValueError("sat_backoff_cap must be >= 0")
+
+    map_solver = MapSolver(n)
+
+    # Heuristic ordering: remove high-arity constraints first.
+    def num_vars(i: int) -> int:
+        try:
+            return len(get_constraint_variables(soft[i]))
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
+    deletion_order = {i: -num_vars(i) for i in range(n)}
+
+    known_muses: List[Set[int]] = []
+    known_mus_keys: Set[FrozenSet[int]] = set()
+    core_isect: Optional[Set[int]] = None
+
+    with _AssumptionSolveSession(
+        soft=soft,
+        hard=hard,
+        solver=solver,
+        verbose=verbose,
+        name_prefix="marco_core_s",
+    ) as session:
+
+        def solve_seed(
+            indices: List[int],
+            want_core: bool = False,
+        ) -> Tuple[SolveResult, Optional[List[int]]]:
+            result, _ = session.solve(indices, extract_core=False)
+            if want_core and use_core and result == SolveResult.UNSAT:
+                _, core = session.solve(indices, extract_core=True)
+                return result, core
+            return result, None
+
+        def update_core_intersection(seed_indices: Set[int], core_indices: Optional[List[int]]) -> None:
+            nonlocal core_isect
+            if not use_core or not core_indices:
+                return
+            core_set = set(core_indices) & seed_indices
+            if not core_set:
+                return
+            if core_isect is None:
+                core_isect = set(core_set)
+            else:
+                core_isect &= core_set
+
+        def shrink_to_mus_deletion(
+            seed_indices: Set[int],
+            initial_core: Optional[Set[int]] = None,
+            locked: Optional[Set[int]] = None,
+        ) -> Set[int]:
+            """
+            Exact core-guided deletion fallback/certification pass.
+            """
+            if initial_core:
+                mus_set = set(initial_core) & seed_indices
+                if not mus_set:
+                    mus_set = set(seed_indices)
+            else:
+                mus_set = set(seed_indices)
+
+            locked_set = set(locked) if locked else set()
+            ordered = sorted(mus_set, key=lambda i: deletion_order.get(i, 0))
+
+            for idx in ordered:
+                if idx not in mus_set or idx in locked_set:
+                    continue
+
+                mus_set.remove(idx)
+                if not mus_set:
+                    mus_set.add(idx)
+                    continue
+
+                result, core = solve_seed(sorted(mus_set), want_core=use_core)
+
+                if result == SolveResult.SAT:
+                    mus_set.add(idx)
+                elif result == SolveResult.UNSAT:
+                    if use_core and core:
+                        refined = set(core) & mus_set
+                        if refined:
+                            mus_set = refined
+                            locked_set &= mus_set
+                else:
+                    mus_set.add(idx)
+
+            return mus_set
+
+        def preshrink_seed(
+            seed_indices: Set[int],
+            seed_core: Optional[Set[int]],
+        ) -> Set[int]:
+            projected = set(seed_indices)
+            if seed_core:
+                projected &= seed_core | seed_indices
+
+            # If this seed contains a known MUS, begin from MUS + fresh core info.
+            for known_mus in sorted(known_muses, key=len):
+                if known_mus <= seed_indices:
+                    projected = set(known_mus)
+                    if seed_core:
+                        projected |= (seed_core & seed_indices)
+                    if verbose >= 1:
+                        print(
+                            "MARCO-CORE: pre-shrink seed via known MUS "
+                            f"(|seed|={len(seed_indices)} -> |projected|={len(projected)})"
+                        )
+                    break
+            return projected
+
+        def shrink_to_mus_bicore_qx(seed_indices: Set[int], seed_core: Optional[Set[int]]) -> Set[int]:
+            """
+            Shrink an UNSAT seed with BiCore-QX:
+            - Phase 1: batched removals with adaptive splitting,
+            - Phase 2: QX recursion on the residual.
+            """
+            projected_seed = preshrink_seed(seed_indices, seed_core)
+
+            if seed_core:
+                current = set(seed_core) & projected_seed
+                if not current:
+                    current = set(projected_seed)
+            else:
+                current = set(projected_seed)
+
+            if not current:
+                current = set(seed_indices)
+
+            locked: Set[int] = set(core_isect & current) if core_isect else set()
+
+            batch_queue: List[Set[int]] = []
+            consecutive_sat = 0
+            base_ratio = batch_base_ratio
+
+            # Phase 1: BiCore batch elimination.
+            while True:
+                unlocked = [i for i in current if i not in locked]
+                if len(unlocked) <= handoff_threshold:
+                    break
+
+                batch: Optional[Set[int]] = None
+
+                while batch_queue and batch is None:
+                    queued = batch_queue.pop()
+                    queued = {i for i in queued if i in current and i not in locked}
+                    if queued:
+                        batch = queued
+
+                if batch is None:
+                    available = sorted(unlocked, key=lambda i: deletion_order.get(i, 0))
+                    if not available:
+                        break
+                    exp = min(consecutive_sat, sat_backoff_cap)
+                    divisor = min(base_ratio * (2 ** exp), len(available))
+                    batch_size = max(1, len(available) // divisor)
+                    batch = set(available[:batch_size])
+
+                test_set = set(current) - batch
+                if not test_set:
+                    # Can't remove everything at once: split or lock.
+                    if len(batch) == 1:
+                        locked |= batch
+                        continue
+                    ordered_batch = sorted(batch, key=lambda i: deletion_order.get(i, 0))
+                    split = len(ordered_batch) // 2
+                    left = set(ordered_batch[:split])
+                    right = set(ordered_batch[split:])
+                    if left:
+                        batch_queue.append(left)
+                    if right:
+                        batch_queue.append(right)
+                    continue
+
+                result, core = solve_seed(sorted(test_set), want_core=use_core)
+
+                if result == SolveResult.UNSAT:
+                    consecutive_sat = 0
+                    if use_core and core:
+                        refined = {i for i in core if i in test_set}
+                        current = refined if refined else set(test_set)
+                    else:
+                        current = set(test_set)
+                    locked &= current
+                    continue
+
+                if result == SolveResult.SAT:
+                    consecutive_sat += 1
+                    if len(batch) == 1:
+                        locked |= batch
+                        continue
+                    ordered_batch = sorted(batch, key=lambda i: deletion_order.get(i, 0))
+                    split = len(ordered_batch) // 2
+                    left = set(ordered_batch[:split])
+                    right = set(ordered_batch[split:])
+                    if left:
+                        batch_queue.append(left)
+                    if right:
+                        batch_queue.append(right)
+                    continue
+
+                # UNKNOWN/ERROR: use exact deletion fallback on current set.
+                if verbose >= 0:
+                    print("MARCO-CORE: solver returned UNKNOWN/ERROR during batch phase, fallback to deletion")
+                return shrink_to_mus_deletion(current, locked=locked)
+
+            # Phase 2: QuickXplain handoff on residual.
+            residual = sorted(current)
+            if not residual:
+                return set()
+
+            locked_residual = sorted(i for i in residual if i in locked)
+            unlocked_residual = [i for i in residual if i not in locked]
+
+            def qx_unsat(enabled: List[int]) -> bool:
+                result, _ = solve_seed(enabled, want_core=False)
+                return result == SolveResult.UNSAT
+
+            def qx_recursive(
+                soft_idx: List[int],
+                hard_idx: List[int],
+                delta: List[int],
+            ) -> List[int]:
+                if delta and qx_unsat(hard_idx):
+                    return []
+                if len(soft_idx) == 1:
+                    return list(soft_idx)
+
+                split = len(soft_idx) // 2
+                left = soft_idx[:split]
+                right = soft_idx[split:]
+
+                delta2 = qx_recursive(right, hard_idx + left, left)
+                delta1 = qx_recursive(left, hard_idx + delta2, delta2)
+                return delta1 + delta2
+
+            if unlocked_residual:
+                qx_part = qx_recursive(unlocked_residual, list(locked_residual), [])
+                mus_set = set(locked_residual) | set(qx_part)
+            else:
+                mus_set = set(locked_residual)
+
+            # Certification pass keeps output exact even if lock heuristics are noisy.
+            return shrink_to_mus_deletion(mus_set)
+
+        def grow_to_mss(seed_indices: Set[int]) -> Set[int]:
+            mss_set = set(seed_indices)
+            for i in range(n):
+                if i in mss_set:
+                    continue
+                result, _ = solve_seed(sorted(mss_set | {i}), want_core=False)
+                if result == SolveResult.SAT:
+                    mss_set.add(i)
+            return mss_set
+
+        iteration = 0
+        while iteration < max_iterations:
+            iteration += 1
+
+            seed_set = map_solver.solve()
+            if seed_set is None:
+                if verbose >= 0:
+                    print(f"MARCO-CORE: enumeration complete after {iteration - 1} iterations")
+                break
+
+            if verbose >= 0:
+                print(f"MARCO-CORE: iteration {iteration}, seed size {len(seed_set)}")
+
+            result, core = solve_seed(sorted(seed_set), want_core=use_core)
+
+            if result == SolveResult.SAT:
+                mss_set = grow_to_mss(seed_set)
+                map_solver.block_down(mss_set)
+                mcs_set = set(range(n)) - mss_set
+
+                if verbose >= 0:
+                    print(f"MARCO-CORE: found MSS size {len(mss_set)}, MCS size {len(mcs_set)}")
+
+                if return_mcs and mcs_set:
+                    yield ("MCS", [soft[i] for i in sorted(mcs_set)])
+                continue
+
+            if result == SolveResult.UNSAT:
+                core_set = set(core) & seed_set if (use_core and core) else None
+                update_core_intersection(seed_set, core)
+                mus_set = shrink_to_mus_bicore_qx(seed_set, core_set)
+                map_solver.block_up(mus_set)
+
+                # Optional extra blocking from larger UNSAT cores discovered en route.
+                if core_set and core_set != mus_set:
+                    map_solver.block_up(core_set)
+
+                mus_key = frozenset(mus_set)
+                if mus_key not in known_mus_keys:
+                    known_mus_keys.add(mus_key)
+                    known_muses.append(set(mus_set))
+
+                if verbose >= 0:
+                    isect_size = len(core_isect) if core_isect is not None else 0
+                    print(f"MARCO-CORE: found MUS size {len(mus_set)} (core_isect={isect_size})")
+
+                if return_mus and mus_set:
+                    yield ("MUS", [soft[i] for i in sorted(mus_set)])
+                continue
+
+            if verbose >= 0:
+                print("MARCO-CORE: solver returned UNKNOWN/ERROR, treating as SAT-side skip")
+            mss_set = grow_to_mss(seed_set)
+            map_solver.block_down(mss_set)
+
+
 def all_mus(
     soft: ConstraintList,
     hard: Optional[ConstraintList] = None,
@@ -624,6 +1016,70 @@ def all_mcs(
     """
     mcses: List[ConstraintList] = []
     for result_type, subset in marco(soft, hard, solver, return_mus=False, return_mcs=True, verbose=verbose):
+        if result_type == "MCS":
+            mcses.append(subset)
+            if max_mcs is not None and len(mcses) >= max_mcs:
+                break
+    return mcses
+
+
+def all_mus_core(
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
+    solver: str = "ace",
+    max_mus: Optional[int] = None,
+    verbose: int = -1,
+    handoff_threshold: Optional[int] = None,
+    batch_base_ratio: int = 2,
+    sat_backoff_cap: int = 8,
+) -> List[ConstraintList]:
+    """
+    Find all MUSes using core-informed MARCO (`marco_core`).
+    """
+    muses: List[ConstraintList] = []
+    for result_type, subset in marco_core(
+        soft,
+        hard,
+        solver,
+        return_mus=True,
+        return_mcs=False,
+        verbose=verbose,
+        handoff_threshold=handoff_threshold,
+        batch_base_ratio=batch_base_ratio,
+        sat_backoff_cap=sat_backoff_cap,
+    ):
+        if result_type == "MUS":
+            muses.append(subset)
+            if max_mus is not None and len(muses) >= max_mus:
+                break
+    return muses
+
+
+def all_mcs_core(
+    soft: ConstraintList,
+    hard: Optional[ConstraintList] = None,
+    solver: str = "ace",
+    max_mcs: Optional[int] = None,
+    verbose: int = -1,
+    handoff_threshold: Optional[int] = None,
+    batch_base_ratio: int = 2,
+    sat_backoff_cap: int = 8,
+) -> List[ConstraintList]:
+    """
+    Find all MCSes using core-informed MARCO (`marco_core`).
+    """
+    mcses: List[ConstraintList] = []
+    for result_type, subset in marco_core(
+        soft,
+        hard,
+        solver,
+        return_mus=False,
+        return_mcs=True,
+        verbose=verbose,
+        handoff_threshold=handoff_threshold,
+        batch_base_ratio=batch_base_ratio,
+        sat_backoff_cap=sat_backoff_cap,
+    ):
         if result_type == "MCS":
             mcses.append(subset)
             if max_mcs is not None and len(mcses) >= max_mcs:
