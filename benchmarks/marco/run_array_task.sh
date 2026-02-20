@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-set -euo pipefail
+
+# set -euo pipefail
+. /nfs/opt/env/env.sh
+module load conda
+conda activate csp
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
@@ -64,6 +69,9 @@ if [[ -z "${instance_rel}" || -z "${method}" || -z "${rep_id}" ]]; then
   exit 1
 fi
 
+# Each array task runs a single method; keep baseline aligned to avoid CLI mismatch.
+BASELINE="$method"
+
 mkdir -p "$RESULTS_DIR/runs" "$RESULTS_DIR/logs"
 
 # Activate project venv if available.
@@ -82,9 +90,10 @@ instance_tag="$(printf "%s" "$instance_rel" | tr '/.' '__' | tr -cd '[:alnum:]_-
 CSV_OUT="$RESULTS_DIR/runs/${method}__rep${rep_id}__${instance_tag}__job${JOB_LABEL}__task${TASK_LABEL}.csv"
 
 CMD=(
-  python3 "$REPO_ROOT/benchmarks/bench_marco_sat11.py"
+  /nfs/home/exterieur/slafifi/.local/bin/uv run python "$REPO_ROOT/benchmarks/bench_marco_sat11.py"
   --dataset-root "$DATASET_ROOT"
   --methods "$method"
+  --baseline "$BASELINE"
   --instances "$instance_rel"
   --max-vars 0
   --max-clauses 0
@@ -120,6 +129,7 @@ fi
 echo "[task] id=${TASK_LABEL} method=$method rep=$rep_id"
 echo "[task] instance=$instance_rel"
 echo "[task] output=$CSV_OUT"
+echo "[task] command: $CMD"
 
 cd "$REPO_ROOT"
 "${CMD[@]}"

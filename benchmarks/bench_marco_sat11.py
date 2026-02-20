@@ -725,8 +725,12 @@ def main() -> None:
     for m in methods:
         if m not in allowed:
             raise ValueError(f"Unknown method '{m}'. Allowed: {', '.join(sorted(allowed))}")
-    if args.baseline not in methods:
-        raise ValueError("Baseline must be included in --methods")
+    baseline = args.baseline
+    if baseline not in methods:
+        if len(methods) == 1:
+            baseline = methods[0]
+        else:
+            raise ValueError("Baseline must be included in --methods")
 
     root = Path(args.dataset_root)
     if not root.exists():
@@ -752,6 +756,7 @@ def main() -> None:
     print(f"  found files   : {len(all_instances)}")
     print(f"  selected      : {len(selected)}")
     print(f"  methods       : {', '.join(methods)}")
+    print(f"  baseline      : {baseline}")
     print(f"  solver/map    : {args.solver}/{args.map_solver}")
     print(f"  repeats/warmup: {args.repeats}/{args.warmup}")
     print(f"  timeout_s     : {args.timeout_s}")
@@ -849,7 +854,7 @@ def main() -> None:
                         print(f"    error: {rec.error.splitlines()[0]}")
 
     summary_rows = summarize(run_records)
-    print_method_summary(summary_rows, baseline=args.baseline)
+    print_method_summary(summary_rows, baseline=baseline)
 
     if args.output_csv:
         write_csv(Path(args.output_csv), run_records, summary_rows)
