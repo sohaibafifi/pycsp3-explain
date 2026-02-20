@@ -694,7 +694,7 @@ def main() -> None:
     parser.add_argument(
         "--timeout-s",
         type=float,
-        default=120.0,
+        default=1200.0,
         help="Timeout in seconds per run (<=0 disables timeout)",
     )
     parser.add_argument(
