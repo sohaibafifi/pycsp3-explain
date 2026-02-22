@@ -36,6 +36,8 @@ TASK_LABEL="${TASK_ID:-param}"
 instance_rel=""
 method=""
 rep_id=""
+param_solver=""
+param_map_solver=""
 
 # Mode A: first argument is a params file (line selection by task index).
 if [[ $# -ge 1 && -f "${1}" ]]; then
@@ -51,22 +53,32 @@ if [[ $# -ge 1 && -f "${1}" ]]; then
     exit 1
   fi
 
-  IFS=$'\t' read -r instance_rel method rep_id _ <<< "${line}"
+  IFS=$'\t' read -r instance_rel method rep_id param_solver param_map_solver _ <<< "${line}"
   if [[ -z "${instance_rel}" || -z "${method}" || -z "${rep_id}" ]]; then
-    read -r instance_rel method rep_id _ <<< "${line}"
+    read -r instance_rel method rep_id param_solver param_map_solver _ <<< "${line}"
   fi
 else
   # Mode B: direct row arguments (for OAR --array-param-file), expected:
-  #   run_array_task.sh <instance_rel> <method> <rep_id>
+  #   run_array_task.sh <instance_rel> <method> <rep_id> [solver] [map_solver]
   instance_rel="${1:-}"
   method="${2:-}"
   rep_id="${3:-}"
+  param_solver="${4:-}"
+  param_map_solver="${5:-}"
 fi
 
 if [[ -z "${instance_rel}" || -z "${method}" || -z "${rep_id}" ]]; then
   echo "Invalid task parameters. Need: <instance_rel> <method> <rep_id>."
   echo "Either call with a params file + task index env, or pass direct args."
   exit 1
+fi
+
+# Precedence: per-task params > env vars > defaults.
+if [[ -n "${param_solver}" ]]; then
+  SOLVER="${param_solver}"
+fi
+if [[ -n "${param_map_solver}" ]]; then
+  MAP_SOLVER="${param_map_solver}"
 fi
 
 # Each array task runs a single method; keep baseline aligned to avoid CLI mismatch.
@@ -128,6 +140,7 @@ fi
 
 echo "[task] id=${TASK_LABEL} method=$method rep=$rep_id"
 echo "[task] instance=$instance_rel"
+echo "[task] solver=$SOLVER map_solver=$MAP_SOLVER"
 echo "[task] output=$CSV_OUT"
 echo "[task] command: $CMD"
 
