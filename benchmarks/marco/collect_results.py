@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 @dataclass
 class Summary:
     method: str
+    instances: int
     runs: int
     completed_rate: float
     timeout_rate: float
@@ -73,6 +74,7 @@ def summarize(rows: List[dict]) -> List[Summary]:
 
     out: List[Summary] = []
     for method, rs in sorted(by_method.items()):
+        unique_instances = len({r.get("instance", "") for r in rs if r.get("instance", "")})
         completed = [r for r in rs if to_bool(r["success"]) and to_bool(r["completed"])]
         valid = [r for r in rs if to_bool(r["success"]) and to_bool(r["valid_mus"]) and to_bool(r["valid_mcs"])]
         elapsed_vals = [float(r["elapsed_s"]) for r in completed if r.get("elapsed_s")]
@@ -86,6 +88,7 @@ def summarize(rows: List[dict]) -> List[Summary]:
         out.append(
             Summary(
                 method=method,
+                instances=unique_instances,
                 runs=len(rs),
                 completed_rate=(len(completed) / len(rs)) if rs else 0.0,
                 timeout_rate=(sum(1 for r in rs if to_bool(r["timed_out"])) / len(rs)) if rs else 0.0,
@@ -121,6 +124,7 @@ def write_summary(path: Path, rows: List[Summary]) -> None:
         w.writerow(
             [
                 "method",
+                "instances",
                 "runs",
                 "completed_rate",
                 "timeout_rate",
@@ -137,6 +141,7 @@ def write_summary(path: Path, rows: List[Summary]) -> None:
             w.writerow(
                 [
                     r.method,
+                    r.instances,
                     r.runs,
                     f"{r.completed_rate:.6f}",
                     f"{r.timeout_rate:.6f}",
@@ -152,7 +157,7 @@ def write_summary(path: Path, rows: List[Summary]) -> None:
 
 
 def print_summary(rows: List[Summary]) -> None:
-    print("method            done  timeout valid median_ms   p90_ms  med_out med_mus med_mcs first_mus_ms")
+    print("method            inst  done  timeout valid median_ms   p90_ms  med_out med_mus med_mcs first_mus_ms")
     for r in rows:
         median_txt = f"{r.median_ms:9.3f}" if r.median_ms is not None else "      n/a"
         p90_txt = f"{r.p90_ms:8.3f}" if r.p90_ms is not None else "    n/a"
@@ -161,7 +166,7 @@ def print_summary(rows: List[Summary]) -> None:
         mcs_txt = f"{r.median_mcs:.1f}" if r.median_mcs is not None else "n/a"
         fm_txt = f"{r.median_first_mus_ms:.1f}" if r.median_first_mus_ms is not None else "n/a"
         print(
-            f"{r.method:16} {r.completed_rate:5.2f} {r.timeout_rate:7.2f} {r.valid_rate:5.2f} "
+            f"{r.method:16} {r.instances:4d} {r.completed_rate:5.2f} {r.timeout_rate:7.2f} {r.valid_rate:5.2f} "
             f"{median_txt} {p90_txt} {out_txt:>7} {mus_txt:>7} {mcs_txt:>7} {fm_txt:>12}"
         )
 
@@ -182,7 +187,9 @@ def main() -> None:
         raise FileNotFoundError(f"runs-dir not found: {runs_dir}")
 
     rows = read_rows(runs_dir)
+    unique_instances = len({r.get("instance", "") for r in rows if r.get("instance", "")})
     print(f"Found {len(rows)} run rows in {runs_dir}")
+    print(f"Found {unique_instances} unique instances")
     write_all_runs(Path(args.output_all), rows)
 
     summary_rows = summarize(rows)
